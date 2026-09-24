@@ -163,11 +163,13 @@ class LoginWindow(tk.Tk):
 
     def _return_to_login(self) -> None:
         self._main_window = None
+        self._login_in_progress = False
+        self.login_name_var.set("")
         self.password_var.set("")
         self.show_password_var.set(False)
         self.password_entry.configure(show="*")
         self.status_var.set("")
+        self._set_login_enabled(True)
         self.deiconify()
         self._center_window()
         self.login_entry.focus_set()
-

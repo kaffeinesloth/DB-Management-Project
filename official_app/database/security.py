@@ -104,19 +104,23 @@ def _read_roles(connection: pyodbc.Connection) -> list[str]:
 
 
 def _read_employee(
-    connection: pyodbc.Connection, original_login: str
+    connection: pyodbc.Connection, database_user: str
 ) -> tuple[int, str]:
-    """Map the authenticated SQL login to NHANVIEN.MANV."""
+    """Map the authenticated database user to NHANVIEN.MANV.
+
+    The server login can be a readable name while its mapped database user is
+    the numeric MANV. SQL Server maintains that LOGIN -> USER relationship.
+    """
     try:
-        employee_id = int(original_login)
+        employee_id = int(database_user)
     except (TypeError, ValueError) as error:
         raise InvalidEmployeeMappingError(
-            "Login SQL phải trùng với MANV dạng số (ví dụ: login [1] cho MANV 1)."
+            "Database user phải trùng với MANV dạng số."
         ) from error
 
-    if employee_id <= 0 or str(employee_id) != original_login.strip():
+    if employee_id <= 0 or str(employee_id) != database_user.strip():
         raise InvalidEmployeeMappingError(
-            "Login SQL phải trùng chính xác với MANV dạng số."
+            "Database user phải trùng chính xác với MANV dạng số."
         )
 
     cursor = connection.cursor()
@@ -155,7 +159,7 @@ def authenticate(login_name: str, password: str) -> tuple[UserSession, pyodbc.Co
                 "Database user chưa thuộc application role nào."
             )
 
-        employee_id, full_name = _read_employee(connection, original_login)
+        employee_id, full_name = _read_employee(connection, database_user)
         session = UserSession(
             login_name=original_login,
             database_user=database_user,
@@ -182,4 +186,3 @@ def authenticate(login_name: str, password: str) -> tuple[UserSession, pyodbc.Co
         raise LoginDemoError(
             "Đã xảy ra lỗi khi tạo phiên đăng nhập."
         ) from error
-

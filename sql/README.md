@@ -12,7 +12,7 @@ Edit and verify these values first:
 
 1. Replace every `QLTV` database name if your database uses another name.
 2. Confirm that `dbo.NHANVIEN` contains `MANV = 1` and `MANV = 2`.
-3. If you want different employees, replace every login/user `[1]` and `[2]` with the corresponding numeric `MANV` values. Keep each SQL login name exactly equal to its `MANV`.
+3. If you want different employees, replace database users `[1]` and `[2]` with the corresponding numeric `MANV` values. Server login names may remain readable names or be changed independently.
 4. Replace `CHANGE_ME_Test1!` and `CHANGE_ME_Test2!` with passwords that satisfy your SQL Server password policy.
 5. Make sure SQL Server Authentication (mixed mode) is enabled if your instance currently accepts Windows Authentication only.
 
@@ -24,12 +24,12 @@ Edit and verify these values first:
 
 ## Manual SSMS test
 
-Connect with SQL Server Authentication as login `1`, select the `QLTV` database, and run verification sections E through H. Then disconnect completely and repeat with login `2`.
+Connect with SQL Server Authentication as `nguyen_trong_hoang`, select the `QLTV` database, and run verification sections E through H. Then disconnect completely and repeat with `tran_thi_mai`.
 
 The expected difference is:
 
-- Account A (`1` / `QLTV_MANAGER`) can select from `NHANVIEN` and `ISBN`.
-- Account B (`2` / `QLTV_STAFF`) can select from `NHANVIEN`, but not `ISBN` unless a pre-existing grant already gives broader access.
+- Account A (`nguyen_trong_hoang` / database user `1` / `QLTV_MANAGER`) can select from `NHANVIEN` and `ISBN`.
+- Account B (`tran_thi_mai` / database user `2` / `QLTV_STAFF`) can select from `NHANVIEN`, but not `ISBN` unless a pre-existing grant already gives broader access.
 
 The scripts deliberately do not use `DENY`, because an existing database may already have intentional permissions that should not be overridden.
 
@@ -37,5 +37,4 @@ The scripts deliberately do not use `DENY`, because an existing database may alr
 
 The login form sends the entered login name and password directly to SQL Server through `pyodbc`. After SQL Server authenticates the account, the application uses the same live connection to read `ORIGINAL_LOGIN()`, `SUSER_SNAME()`, `USER_NAME()`, role membership, and the matching `NHANVIEN` row.
 
-Because the existing schema defines `MANV` as an integer and has no login-name column, the demo uses a numeric SQL login name equal to `MANV`. No password is stored in `NHANVIEN`, no account table is added, and the application never reconnects as `sa` or another administrator.
-
+Because the existing schema defines `MANV` as an integer and has no login-name column, each readable SQL login maps to a numeric database user equal to `MANV`. No password is stored in `NHANVIEN`, no account table is added, and the application never reconnects as `sa` or another administrator.

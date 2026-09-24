@@ -5,8 +5,7 @@ names and passwords are intentionally not stored here; they come from the
 login form at runtime.
 """
 
-SQL_SERVER = r"localhost\SQLEXPRESS"
+SQL_SERVER = "localhost"
 DATABASE = "QLTV"
-DRIVER = "ODBC Driver 17 for SQL Server"
+DRIVER = "ODBC Driver 18 for SQL Server"
 CONNECTION_TIMEOUT_SECONDS = 5
-

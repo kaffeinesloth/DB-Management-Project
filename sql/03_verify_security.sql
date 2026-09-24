@@ -15,7 +15,7 @@ SELECT
     [is_disabled],
     [create_date]
 FROM sys.server_principals
-WHERE [name] IN (N'1', N'2')
+WHERE [name] IN (N'nguyen_trong_hoang', N'tran_thi_mai')
 ORDER BY [name];
 GO
 
@@ -98,15 +98,17 @@ GO
     Manual SSMS test
     ----------------
     1. Open a new Database Engine connection using SQL Server Authentication.
-       Login with Account A: login name 1 and its replacement password.
+       Login with Account A: nguyen_trong_hoang and its replacement password.
     2. Open a query in QLTV and run sections E through H.
-       Expected: database user 1, role QLTV_MANAGER, NHANVIEN SELECT = 1,
+       Expected: login nguyen_trong_hoang, database user 1,
+       role QLTV_MANAGER, NHANVIEN SELECT = 1,
        and ISBN SELECT = 1.
     3. Disconnect Account A completely.
-    4. Open another Database Engine connection using Account B: login name 2
-       and its replacement password.
+    4. Open another Database Engine connection using Account B:
+       tran_thi_mai and its replacement password.
     5. Open a query in QLTV and run sections E through H.
-       Expected: database user 2, role QLTV_STAFF, NHANVIEN SELECT = 1,
+       Expected: login tran_thi_mai, database user 2, role QLTV_STAFF,
+       NHANVIEN SELECT = 1,
        and ISBN SELECT = 0 unless another existing grant supplies that access.
     6. Optional proof using SELECT statements:
            SELECT TOP (1) MANV, HONV, TENNV FROM dbo.NHANVIEN;
@@ -114,4 +116,3 @@ GO
        Account A and fail for Account B when no broader pre-existing grant exists:
            SELECT TOP (1) ISBN, TENSACH FROM dbo.ISBN;
 */
-

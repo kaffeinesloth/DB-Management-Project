@@ -4,10 +4,11 @@
     IMPORTANT BEFORE RUNNING MANUALLY IN SSMS:
     1. Replace both placeholder passwords.
     2. Confirm that QLTV.dbo.NHANVIEN contains MANV 1 and MANV 2.
-    3. If you use different employee IDs, replace every [1] and [2] below.
+    3. If you use different employee IDs, replace database users [1] and [2].
+       You may also replace the readable server login names independently.
     4. Run sql/01_security_setup.sql first.
 
-    The numeric SQL login name intentionally equals NHANVIEN.MANV.
+    Each readable server login maps to a numeric database user equal to MANV.
 */
 
 /* Stop before creating anything when the employee mappings are not valid. */
@@ -29,31 +30,31 @@ GO
 USE [master];
 GO
 
-IF SUSER_ID(N'1') IS NULL
+IF SUSER_ID(N'nguyen_trong_hoang') IS NULL
 BEGIN
     /* Replace CHANGE_ME_Test1! before execution. */
-    CREATE LOGIN [1]
+    CREATE LOGIN [nguyen_trong_hoang]
         WITH PASSWORD = 'CHANGE_ME_Test1!',
              CHECK_POLICY = ON,
              CHECK_EXPIRATION = OFF;
 END;
 ELSE
 BEGIN
-    PRINT 'Login [1] already exists; password was not changed.';
+    PRINT 'Login [nguyen_trong_hoang] already exists; password was not changed.';
 END;
 GO
 
-IF SUSER_ID(N'2') IS NULL
+IF SUSER_ID(N'tran_thi_mai') IS NULL
 BEGIN
     /* Replace CHANGE_ME_Test2! before execution. */
-    CREATE LOGIN [2]
+    CREATE LOGIN [tran_thi_mai]
         WITH PASSWORD = 'CHANGE_ME_Test2!',
              CHECK_POLICY = ON,
              CHECK_EXPIRATION = OFF;
 END;
 ELSE
 BEGIN
-    PRINT 'Login [2] already exists; password was not changed.';
+    PRINT 'Login [tran_thi_mai] already exists; password was not changed.';
 END;
 GO
 
@@ -63,13 +64,13 @@ GO
 
 IF DATABASE_PRINCIPAL_ID(N'1') IS NULL
 BEGIN
-    CREATE USER [1] FOR LOGIN [1];
+    CREATE USER [1] FOR LOGIN [nguyen_trong_hoang];
 END;
 GO
 
 IF DATABASE_PRINCIPAL_ID(N'2') IS NULL
 BEGIN
-    CREATE USER [2] FOR LOGIN [2];
+    CREATE USER [2] FOR LOGIN [tran_thi_mai];
 END;
 GO
 
