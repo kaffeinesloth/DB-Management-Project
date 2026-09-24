@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$IncludeDocker
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -132,7 +134,28 @@ finally {
     Pop-Location
 }
 
-Write-Host "`nPackage setup completed successfully." -ForegroundColor Green
-Write-Host "Next: follow SETUP_GUIDE.md to configure SQL Server, create QLTV, and create the demo accounts."
-Write-Host "This script did not change SQL Server or store any database passwords."
+if ($IncludeDocker) {
+    Write-Step "Checking Docker Desktop"
+    $docker = Get-Command "docker.exe" -ErrorAction SilentlyContinue
+    $dockerInstalledNow = $false
+    if ($null -eq $docker) {
+        Install-WingetPackage -PackageId "Docker.DockerDesktop" -DisplayName "Docker Desktop"
+        $dockerInstalledNow = $true
+        $docker = Get-Command "docker.exe" -ErrorAction SilentlyContinue
+    }
 
+    if ($dockerInstalledNow -or $null -eq $docker) {
+        Write-Host "Docker Desktop was installed. Restart Windows if requested, start Docker Desktop, then rerun this script with -IncludeDocker." -ForegroundColor Yellow
+    }
+    else {
+        & $docker.Source compose version
+        if ($LASTEXITCODE -ne 0) {
+            throw "Docker Compose is unavailable. Start or update Docker Desktop, then rerun this script."
+        }
+        Write-Host "Docker Desktop and Docker Compose are available." -ForegroundColor Green
+    }
+}
+
+Write-Host "`nPackage setup completed successfully." -ForegroundColor Green
+Write-Host "Next: follow SETUP_GUIDE.md to start the Docker database and application."
+Write-Host "This script did not change SQL Server or store any database passwords."
