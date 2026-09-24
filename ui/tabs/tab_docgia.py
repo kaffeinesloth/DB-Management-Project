@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import customtkinter as ctk
+import ui.ctk_patch
 from datetime import datetime, timedelta
 from typing import Optional
 from dao.docgia_dao import DocGiaDAO
@@ -522,7 +523,8 @@ class TabDocGia(ctk.CTkFrame):
             messagebox.showerror("Lỗi CSDL", str(ex))
 
     def clear_form(self):
-        """Xóa trắng các ô nhập trên form."""
+        """Xóa trắng các ô nhập trên form và khôi phục placeholder."""
+        self.focus_set()
         for field in self.fields.values():
             field.delete(0, "end")
         self.cb_gender.set("Nam")

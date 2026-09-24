@@ -52,6 +52,50 @@ class MuonTraDAO:
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
     @staticmethod
+    def search_phieu_dang_muon(keyword: str) -> List[Dict[str, Any]]:
+        """Tìm kiếm phiếu đang mượn theo Tên độc giả, Mã ĐG, SĐT, Mã sách hoặc Tên sách."""
+        pattern = f"%{keyword.strip()}%"
+        query = """
+            SELECT pm.MAPHIEU, pm.MADG, 
+                   RTRIM(dg.HODG) + ' ' + RTRIM(dg.TENDG) AS HoTenDG,
+                   dg.DIENTHOAI, ct.MASACH, i.TENSACH, ISNULL(i.GIA, 0) AS GiaBia,
+                   pm.HINHTHUC,
+                   CASE WHEN pm.HINHTHUC = 1 THEN N'Mang về' ELSE N'Tại chỗ' END AS HinhThucStr,
+                   CONVERT(VARCHAR(10), pm.NGAYMUON, 103) AS NgayMuonStr,
+                   pm.NGAYMUON,
+                   DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) AS SoNgayDaMuon,
+                   CASE 
+                       WHEN pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 30 
+                            THEN DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) - 30
+                       WHEN pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 0 
+                            THEN DATEDIFF(DAY, pm.NGAYMUON, GETDATE())
+                       ELSE 0 
+                   END AS SoNgayTre,
+                   nv.HONV + ' ' + nv.TENNV AS NhanVienChoMuon
+            FROM dbo.CT_PHIEUMUON ct
+            INNER JOIN dbo.PHIEUMUON pm ON ct.MAPHIEU = pm.MAPHIEU
+            INNER JOIN dbo.DOCGIA dg ON pm.MADG = dg.MADG
+            INNER JOIN dbo.SACH s ON ct.MASACH = s.MASACH
+            INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN
+            INNER JOIN dbo.NHANVIEN nv ON pm.MANV = nv.MANV
+            WHERE ct.TRA = 0
+              AND (
+                  dg.TENDG LIKE ? 
+                  OR dg.HODG LIKE ? 
+                  OR CAST(pm.MADG AS VARCHAR) LIKE ? 
+                  OR dg.DIENTHOAI LIKE ? 
+                  OR ct.MASACH LIKE ? 
+                  OR i.TENSACH LIKE ?
+              )
+            ORDER BY pm.NGAYMUON ASC;
+        """
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (pattern, pattern, pattern, pattern, pattern, pattern))
+            cols = [col[0] for col in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    @staticmethod
     def tao_phieu_muon(madg: int, manv: int, hinh_thuc: int, danh_sach_masach: List[str]) -> int:
         """
         Tạo phiếu mượn sách mới với kiểm tra toàn bộ ràng buộc nghiệp vụ:
@@ -124,6 +168,10 @@ class MuonTraDAO:
         - Phạt mất sách: Đền bù 100% giá bìa (ISBN.GIA).
         - Phạt hư hỏng: Đền bù 50% giá bìa nếu sách trả bị hỏng (TINHTRANG=0).
         """
+        maphieu_val = int(maphieu)
+        masach_val = str(masach)
+        tinh_trang_tra_val = int(tinh_trang_tra)
+
         query = """
             SELECT pm.HINHTHUC, pm.NGAYMUON, 
                    DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) AS SoNgayDaMuon,
@@ -137,7 +185,7 @@ class MuonTraDAO:
         """
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, (maphieu, masach))
+            cursor.execute(query, (maphieu_val, masach_val))
             row = cursor.fetchone()
             if not row:
                 raise ValueError("Không tìm thấy thông tin mượn sách này!")
@@ -157,7 +205,7 @@ class MuonTraDAO:
 
             # 3. Tính hư hỏng
             tien_phat_hong = 0
-            if not bi_mat and tinh_trang_tra == 0 and tinh_trang_muon == 1:
+            if not bi_mat and tinh_trang_tra_val == 0 and tinh_trang_muon == 1:
                 # Phạt 50% giá sách khi làm hư hại
                 tien_phat_hong = int(gia_bia * 0.5)
 
@@ -183,7 +231,17 @@ class MuonTraDAO:
         3. Cập nhật SACH: CHOMUON = 0. Nếu mất sách hoặc hỏng thì TINHTRANG = 0.
         Thực hiện trong 1 Transaction an toàn.
         """
-        phi_phat = MuonTraDAO.tinh_toan_phi_phat(maphieu, masach, tinh_trang_tra, bi_mat)
+        maphieu_val = int(maphieu)
+        masach_val = str(masach)
+        manvns_val = int(manvns)
+        tinh_trang_tra_val = int(tinh_trang_tra)
+
+        phi_phat = MuonTraDAO.tinh_toan_phi_phat(
+            maphieu=maphieu_val, 
+            masach=masach_val, 
+            tinh_trang_tra=tinh_trang_tra_val, 
+            bi_mat=bi_mat
+        )
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -196,22 +254,23 @@ class MuonTraDAO:
                         MANVNS = ?
                     WHERE MAPHIEU = ? AND MASACH = ?;
                 """
-                cursor.execute(query_ct, (manvns, maphieu, masach))
+                cursor.execute(query_ct, (manvns_val, maphieu_val, masach_val))
 
                 # 2. Cập nhật SACH
                 # Nếu mất sách: TINHTRANG = 0 (hỏng/mất), CHOMUON = 0
-                # Nếu trả sách bình thường: TINHTRANG = tinh_trang_tra, CHOMUON = 0
-                sach_tinh_trang = 0 if bi_mat else tinh_trang_tra
+                # Nếu trả sách bình thường: TINHTRANG = tinh_trang_tra_val, CHOMUON = 0
+                sach_tinh_trang = 0 if bi_mat else tinh_trang_tra_val
                 query_sach = """
                     UPDATE dbo.SACH
                     SET CHOMUON = 0,
                         TINHTRANG = ?
                     WHERE MASACH = ?;
                 """
-                cursor.execute(query_sach, (sach_tinh_trang, masach))
+                cursor.execute(query_sach, (sach_tinh_trang, masach_val))
 
                 conn.commit()
                 return phi_phat
             except Exception as e:
                 conn.rollback()
                 raise RuntimeError(f"Lỗi khi ghi nhận trả sách: {e}")
+

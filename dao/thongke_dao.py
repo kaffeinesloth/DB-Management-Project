@@ -81,3 +81,51 @@ class ThongKeDAO:
             cursor.execute(query)
             cols = [col[0] for col in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    @staticmethod
+    def get_tong_quan() -> Dict[str, Any]:
+        """Lấy các chỉ số tổng quan phục vụ Dashboard Thống kê."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM dbo.ISBN;")
+            tong_isbn = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM dbo.SACH;")
+            tong_sach = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1;")
+            dang_muon = cursor.fetchone()[0]
+
+            cursor.execute("SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1;")
+            tong_docgia = cursor.fetchone()[0]
+
+            # Số sách quá hạn
+            query_qh = """
+                SELECT COUNT(*), ISNULL(SUM(
+                    CASE 
+                        WHEN pm.HINHTHUC = 1 THEN (DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) - 30) * 500
+                        ELSE DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) * 500
+                    END
+                ), 0)
+                FROM dbo.CT_PHIEUMUON ct
+                INNER JOIN dbo.PHIEUMUON pm ON ct.MAPHIEU = pm.MAPHIEU
+                WHERE ct.TRA = 0
+                  AND (
+                      (pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 30)
+                      OR
+                      (pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 0)
+                  );
+            """
+            cursor.execute(query_qh)
+            row_qh = cursor.fetchone()
+            so_qua_han = row_qh[0]
+            tien_phat = row_qh[1]
+
+            return {
+                "TongDauSach": tong_isbn,
+                "TongCuonSach": tong_sach,
+                "DangMuon": dang_muon,
+                "DocGiaHoatDong": tong_docgia,
+                "SoQuaHan": so_qua_han,
+                "TienPhatUocTinh": tien_phat
+            }

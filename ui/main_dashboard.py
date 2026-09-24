@@ -1,6 +1,9 @@
 import customtkinter as ctk
 from typing import Dict, Any
 from ui.tabs.tab_docgia import TabDocGia
+from ui.tabs.tab_sach import TabSach
+from ui.tabs.tab_muontra import TabMuonTra
+from ui.tabs.tab_thongke import TabThongKe
 
 class MainDashboard(ctk.CTk):
     """
@@ -142,29 +145,13 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        # Khởi tạo các Views
-        self.views = {}
-
-        # Tab 1: Quản lý Độc giả (Hoàn chỉnh)
-        self.views["docgia"] = TabDocGia(self.main_container, self.current_user)
-
-        # Tab 2: Quản lý Sách (Placeholder)
-        self.views["sach"] = self.create_placeholder_tab(
-            "QUẢN LÝ ĐẦU SÁCH & CUỐN SÁCH", 
-            "Module quản lý danh mục Đầu sách (ISBN), Cuốn sách vật lý (SACH),\nNgăn tủ, Thể loại, Tác giả và Tác giả_Sách.\n(Sẽ hoàn thiện ở Bước 2)"
-        )
-
-        # Tab 3: Mượn / Trả Sách (Placeholder)
-        self.views["muontra"] = self.create_placeholder_tab(
-            "QUẢN LÝ MƯỢN / TRẢ SÁCH", 
-            "Module lập phiếu mượn sách, kiểm tra giới hạn 3 cuốn,\ntrả sách, tự động tính phạt quá hạn 500đ/ngày hoặc bồi thường mất sách.\n(Sẽ hoàn thiện ở Bước 3)"
-        )
-
-        # Tab 4: Báo Cáo Thống Kê (Placeholder)
-        self.views["thongke"] = self.create_placeholder_tab(
-            "BÁO CÁO & THỐNG KÊ", 
-            "Module thống kê danh sách độc giả mượn quá hạn và tần suất sử dụng sách.\n(Sẽ hoàn thiện ở Bước 4)"
-        )
+        # Khởi tạo 4 Tabs giao diện hoàn chỉnh
+        self.views = {
+            "sach": TabSach(self.main_container, self.current_user),
+            "docgia": TabDocGia(self.main_container, self.current_user),
+            "muontra": TabMuonTra(self.main_container, self.current_user),
+            "thongke": TabThongKe(self.main_container, self.current_user),
+        }
 
     def create_placeholder_tab(self, title: str, desc: str) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.main_container, corner_radius=12)
