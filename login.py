@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import ui.ctk_patch
 from tkinter import messagebox
 from db import kiem_tra_dang_nhap
 

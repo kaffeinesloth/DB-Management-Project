@@ -1,4 +1,5 @@
 import customtkinter as ctk
+import ui.ctk_patch
 from typing import Dict, Any
 from ui.tabs.tab_docgia import TabDocGia
 from ui.tabs.tab_sach import TabSach
