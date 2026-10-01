@@ -183,6 +183,16 @@ class TabSach(ctk.CTkFrame):
         )
         btn_toggle_status.pack(side="left", padx=(0, 10))
 
+        self.btn_delete_book = ctk.CTkButton(
+            action_bar,
+            text="Hủy / Thanh Lý Sách",
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            font=ctk.CTkFont(weight="bold"),
+            command=self.handle_delete_book
+        )
+        self.btn_delete_book.pack(side="left", padx=(10, 0))
+
     def create_right_panel(self):
         right_frame = ctk.CTkScrollableFrame(self, width=340, corner_radius=12)
         right_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
@@ -333,6 +343,8 @@ class TabSach(ctk.CTkFrame):
             self.display_records(records)
             self.txt_search.delete(0, "end")
             self.load_comboboxes()
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách sách:\n{ex}")
 
@@ -374,6 +386,8 @@ class TabSach(ctk.CTkFrame):
                 self.cb_ngonngu.configure(values=list(self.nn_map.keys()))
                 self.cb_ngonngu.set(list(self.nn_map.keys())[0])
 
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             print("Lỗi tải danh mục combobox:", ex)
 
@@ -419,8 +433,37 @@ class TabSach(ctk.CTkFrame):
         try:
             records = SachDAO.search_sach(keyword)
             self.display_records(records)
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi tìm kiếm", str(ex))
+
+
+    def handle_delete_book(self):
+        """Xử lý nút Hủy sách / Thanh lý."""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một cuốn sách để hủy!")
+            return
+
+        masach = self.tree.item(selected[0])["values"][0]
+        
+        confirm = messagebox.askyesno(
+            "Xác nhận Hủy", 
+            f"Bạn có chắc chắn muốn HỦY HOÀN TOÀN (Thanh lý) sách có mã '{masach}' khỏi cơ sở dữ liệu không?\nHành động này không thể hoàn tác!"
+        )
+        if confirm:
+            try:
+                success = SachDAO.huy_cuon_sach(masach)
+                if success:
+                    messagebox.showinfo("Thành công", f"Đã thanh lý sách '{masach}' thành công!")
+                    self.load_data()
+                else:
+                    messagebox.showerror("Lỗi", "Không thể xóa cuốn sách này!")
+            except ValueError as ve:
+                messagebox.showwarning("Không thể thực hiện", str(ve))
+            except Exception as e:
+                messagebox.showerror("Lỗi CSDL", str(e))
 
     def handle_toggle_tinh_trang(self):
         """Chuyển đổi tình trạng sách Tốt <-> Hư hỏng."""
@@ -456,6 +499,8 @@ class TabSach(ctk.CTkFrame):
                 self.load_data()
             else:
                 messagebox.showerror("Thất bại", "Không thể cập nhật CSDL!")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", str(ex))
 
@@ -480,6 +525,8 @@ class TabSach(ctk.CTkFrame):
             messagebox.showinfo("Thành công", f"Đã thêm cuốn sách '{masach}' vào kho thành công!")
             self.clear_cuon_form()
             self.load_data()
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể thêm cuốn sách:\n{ex}")
 
@@ -537,6 +584,8 @@ class TabSach(ctk.CTkFrame):
             messagebox.showinfo("Thành công", f"Đã tạo đầu sách mới: {tensach} ({isbn})!")
             self.clear_isbn_form()
             self.load_data()
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tạo đầu sách:\n{ex}")
 

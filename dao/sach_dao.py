@@ -215,3 +215,29 @@ class SachDAO:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    @staticmethod
+
+
+    @staticmethod
+    def huy_cuon_sach(masach: str) -> bool:
+        """
+        Xóa hẳn cuốn sách khỏi cơ sở dữ liệu (thanh lý).
+        """
+        masach_str = str(masach).strip()
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT CHOMUON FROM dbo.SACH WHERE MASACH = ?;", (masach_str,))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError("Không tìm thấy cuốn sách này trong hệ thống!")
+            if row[0] == 1:
+                raise ValueError("Sách đang được mượn, không thể tiến hành hủy!")
+            try:
+                cursor.execute("DELETE FROM dbo.SACH WHERE MASACH = ?;", (masach_str,))
+                conn.commit()
+                return cursor.rowcount > 0
+            except Exception as e:
+                if 'REFERENCE constraint' in str(e) or 'FK_' in str(e):
+                    raise ValueError("Không thể hủy sách do đã có lịch sử mượn trả (ràng buộc CSDL). Vui lòng dùng tính năng 'Báo Hỏng' thay thế!")
+                raise e

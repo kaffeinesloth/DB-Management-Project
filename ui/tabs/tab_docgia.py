@@ -314,6 +314,8 @@ class TabDocGia(ctk.CTkFrame):
             records = DocGiaDAO.get_all()
             self.display_records(records)
             self.txt_search.delete(0, "end")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách độc giả:\n{ex}")
 
@@ -374,6 +376,8 @@ class TabDocGia(ctk.CTkFrame):
         try:
             records = DocGiaDAO.search(keyword)
             self.display_records(records)
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi tìm kiếm", str(ex))
 
@@ -402,6 +406,8 @@ class TabDocGia(ctk.CTkFrame):
             if DocGiaDAO.check_cmnd_exists(cmnd):
                 messagebox.showerror("Trùng lặp", f"Số CMND/CCCD '{cmnd}' đã tồn tại trên hệ thống!")
                 return
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as e:
             messagebox.showerror("Lỗi CSDL", f"Không thể kiểm tra CMND: {e}")
             return
@@ -412,6 +418,8 @@ class TabDocGia(ctk.CTkFrame):
                 if DocGiaDAO.check_email_exists(email):
                     messagebox.showerror("Trùng lặp", f"Email '{email}' đã được đăng ký trước đó!")
                     return
+            except ValueError as ve:
+                messagebox.showwarning("Cảnh báo", str(ve))
             except Exception as e:
                 messagebox.showerror("Lỗi CSDL", f"Không thể kiểm tra Email: {e}")
                 return
@@ -458,6 +466,8 @@ class TabDocGia(ctk.CTkFrame):
             )
             self.clear_form()
             self.load_data()
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể lưu độc giả vào CSDL:\n{ex}")
 
@@ -486,6 +496,8 @@ class TabDocGia(ctk.CTkFrame):
                 self.load_data()
             else:
                 messagebox.showerror("Thất bại", "Không tìm thấy thông tin để cập nhật!")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", str(ex))
 
@@ -519,6 +531,8 @@ class TabDocGia(ctk.CTkFrame):
                 self.load_data()
             else:
                 messagebox.showerror("Thất bại", "Cập nhật trạng thái không thành công!")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", str(ex))
 

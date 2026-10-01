@@ -148,6 +148,8 @@ class TabThongKe(ctk.CTkFrame):
             self.card2.configure(text=f"{overview['TongCuonSach']} cuốn ({overview['DangMuon']} đang mượn)")
             self.card3.configure(text=f"{overview['DocGiaHoatDong']} thẻ")
             self.card4.configure(text=f"{overview['SoQuaHan']} cuốn ({overview['TienPhatUocTinh']:,} đ)")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             print("Lỗi tải KPI:", ex)
 
@@ -205,6 +207,8 @@ class TabThongKe(ctk.CTkFrame):
                 ), tags=(tag,))
 
             self.lbl_report_summary.configure(text=f"Có {len(records)} lượt mượn sách bị trễ hạn")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải báo cáo quá hạn:\n{ex}")
 
@@ -246,5 +250,7 @@ class TabThongKe(ctk.CTkFrame):
                 ), tags=(tag,))
 
             self.lbl_report_summary.configure(text=f"Thống kê trên {len(records)} đầu sách trong thư viện")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải báo cáo tần suất:\n{ex}")

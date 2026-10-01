@@ -283,6 +283,8 @@ class TabMuonTra(ctk.CTkFrame):
             records = MuonTraDAO.get_danh_sach_phieu_dang_muon()
             self.display_records(records)
             self.txt_search.delete(0, "end")
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách mượn sách:\n{ex}")
 
@@ -317,6 +319,8 @@ class TabMuonTra(ctk.CTkFrame):
         try:
             records = MuonTraDAO.search_phieu_dang_muon(keyword)
             self.display_records(records)
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi tìm kiếm", str(ex))
 
@@ -414,6 +418,8 @@ class TabMuonTra(ctk.CTkFrame):
                 tinh_trang_tra=int(tinh_trang_tra), 
                 bi_mat=bi_mat
             )
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi tính phí", str(ex))
             return
@@ -448,6 +454,8 @@ class TabMuonTra(ctk.CTkFrame):
             )
             messagebox.showinfo("Thành công", f"Đã thu hồi sách '{masach}' và cập nhật kho thành công!")
             self.load_data()
+        except ValueError as ve:
+            messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", str(ex))
 
