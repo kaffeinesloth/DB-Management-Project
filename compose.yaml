@@ -1,0 +1,71 @@
+name: library-management-project-02
+
+services:
+  backup-volume-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    user: root
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        mkdir -p /var/opt/mssql/backups
+        && chown -R 10001:0 /var/opt/mssql/backups
+        && chmod -R 0770 /var/opt/mssql/backups
+    volumes:
+      - sqlserver-backups:/var/opt/mssql/backups
+    restart: "no"
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    depends_on:
+      backup-volume-init:
+        condition: service_completed_successfully
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-LibraryAdmin_2026!}
+      SQLCMDPASSWORD: ${MSSQL_SA_PASSWORD:-LibraryAdmin_2026!}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - sqlserver-backups:/var/opt/mssql/backups
+      - ./sql:/docker-init/sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1";
+          else
+            /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -C -Q "SELECT 1";
+          fi
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  database-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      DB_HOST: sqlserver
+      SQLCMDPASSWORD: ${MSSQL_SA_PASSWORD:-LibraryAdmin_2026!}
+      LOAD_SAMPLE_DATA: ${LOAD_SAMPLE_DATA:-true}
+      APP_DB_USER: ${APP_DB_USER:-library_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-LibraryApp_2026!}
+    volumes:
+      - ./docker/init-database.sh:/docker-init/init-database.sh:ro
+      - ./sql:/docker-init/sql:ro
+    command: ["/bin/bash", "/docker-init/init-database.sh"]
+    restart: "no"
+
+volumes:
+  sqlserver-data:
+  sqlserver-backups:
