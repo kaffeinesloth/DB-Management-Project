@@ -1,4 +1,4 @@
-/* ============================================================
+﻿/* ============================================================
    DE 1 - QUAN LY THU VIEN
    Microsoft SQL Server / SSMS
    Tao database va 11 bang cho de Quan ly Thu vien (da bo SACH_DIENTU).
@@ -113,13 +113,28 @@ CREATE TABLE dbo.DOCGIA
                 CONSTRAINT DF_DOCGIA_HOATDONG DEFAULT (1),
 
     CONSTRAINT PK_DOCGIA PRIMARY KEY (MADG),
-    CONSTRAINT UQ_DOCGIA_EMAIL UNIQUE (EMAILDG),
-    CONSTRAINT UQ_DOCGIA_SOCMND UNIQUE (SOCMND),
     CONSTRAINT CK_DOCGIA_HANTHE CHECK
     (
         NGAYHETHAN IS NULL OR NGAYHETHAN >= NGAYLAMTHE
     )
 );
+GO
+
+-- Thiet lap bat buoc cua SQL Server cho Filtered Index
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
+-- Filtered Unique Index: Chi bat buoc duy nhat tren the dang HOATDONG = 1
+-- Cho phep nguoi dung cap lai the moi khi mat the ma khong bi vi pham khoa duy nhat
+CREATE UNIQUE INDEX UQ_DOCGIA_SOCMND_ACTIVE 
+    ON dbo.DOCGIA(SOCMND) 
+    WHERE HOATDONG = 1 AND SOCMND IS NOT NULL;
+GO
+
+CREATE UNIQUE INDEX UQ_DOCGIA_EMAIL_ACTIVE 
+    ON dbo.DOCGIA(EMAILDG) 
+    WHERE HOATDONG = 1 AND EMAILDG IS NOT NULL;
 GO
 
 /* ============================================================
@@ -283,6 +298,81 @@ CREATE INDEX IX_PHIEUMUON_MADG         ON dbo.PHIEUMUON(MADG);
 CREATE INDEX IX_PHIEUMUON_MANV         ON dbo.PHIEUMUON(MANV);
 CREATE INDEX IX_CT_PHIEUMUON_MASACH    ON dbo.CT_PHIEUMUON(MASACH);
 CREATE INDEX IX_CT_PHIEUMUON_MANVNS    ON dbo.CT_PHIEUMUON(MANVNS);
+GO
+
+/* ============================================================
+   TRIGGER: DONG BO TRANG THAI SACH (CHOMUON) KHI MUON / TRA
+   Tu dong cap nhat SACH.CHOMUON o cap Database, dam bao toan ven du lieu
+   ngay ca khi thao tac truc tiep bang lenh SQL trong SSMS.
+   ============================================================ */
+CREATE OR ALTER TRIGGER dbo.trg_DongBoTrangThaiSach
+ON dbo.CT_PHIEUMUON
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 1. Khi tao ban ghi muon sach (TRA = 0) -> Danh dau SACH.CHOMUON = 1
+    UPDATE s
+    SET s.CHOMUON = 1
+    FROM dbo.SACH s
+    INNER JOIN inserted i ON s.MASACH = i.MASACH
+    WHERE i.TRA = 0;
+
+    -- 2. Khi xac nhan tra sach (TRA = 1) -> Tra sach ve kho (SACH.CHOMUON = 0)
+    UPDATE s
+    SET s.CHOMUON = 0
+    FROM dbo.SACH s
+    INNER JOIN inserted i ON s.MASACH = i.MASACH
+    WHERE i.TRA = 1;
+END;
+GO
+
+/* ============================================================
+   VIEW: TINH TOAN TIEN PHAT VA HAN MUON THOI GIAN THUC (CHUAN 3NF)
+   Giai quyet bai toan tinh tien phat theo de bai ma KHONG CAN THEM COT
+   vao 11 bang vat ly.
+   ============================================================ */
+CREATE OR ALTER VIEW dbo.v_ChiTietPhieuMuon_Phat
+AS
+SELECT 
+    ct.MAPHIEU,
+    ct.MASACH,
+    i.TENSACH,
+    pm.MADG,
+    RTRIM(dg.HODG) + ' ' + RTRIM(dg.TENDG) AS HoTenDG,
+    dg.DIENTHOAI,
+    dg.EMAILDG,
+    pm.HINHTHUC,
+    CASE WHEN pm.HINHTHUC = 1 THEN N'Mang về' ELSE N'Tại chỗ' END AS HinhThucStr,
+    pm.NGAYMUON,
+    ct.NGAYTRA,
+    ct.TRA,
+    ct.TINHTRANGMUON,
+    s.TINHTRANG AS TINHTRANGHIENTAI,
+    ISNULL(i.GIA, 0) AS GiaBia,
+    pm.MANV AS NhanVienChoMuon,
+    ct.MANVNS AS NhanVienNhanSach,
+    DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) AS SoNgayDaMuon,
+    CASE 
+        WHEN pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) > 30 
+             THEN DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) - 30
+        WHEN pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) > 0 
+             THEN DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE()))
+        ELSE 0 
+    END AS SoNgayTre,
+    (CASE 
+        WHEN pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) > 30 
+             THEN (DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) - 30) * 500
+        WHEN pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) > 0 
+             THEN DATEDIFF(DAY, pm.NGAYMUON, ISNULL(ct.NGAYTRA, GETDATE())) * 500
+        ELSE 0 
+    END) AS TienPhatTre
+FROM dbo.CT_PHIEUMUON ct
+INNER JOIN dbo.PHIEUMUON pm ON ct.MAPHIEU = pm.MAPHIEU
+INNER JOIN dbo.DOCGIA dg ON pm.MADG = dg.MADG
+INNER JOIN dbo.SACH s ON ct.MASACH = s.MASACH
+INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN;
 GO
 
 /* Kiem tra 11 bang vua tao */

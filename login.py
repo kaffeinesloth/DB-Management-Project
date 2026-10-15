@@ -1,7 +1,7 @@
 import customtkinter as ctk
 import ui.ctk_patch
 from tkinter import messagebox
-from db import kiem_tra_dang_nhap
+from db import dang_nhap_he_thong
 
 # Cấu hình giao diện Dark Mode
 ctk.set_appearance_mode("Dark")
@@ -12,8 +12,9 @@ class LoginForm(ctk.CTk):
         super().__init__()
 
         self.title("Quản Lý Thư Viện - Đăng Nhập")
-        self.geometry("420x530")
+        self.geometry("420x540")
         self.resizable(False, False)
+        self.logged_in_user = None
 
         # Căn giữa màn hình
         self.center_window()
@@ -41,22 +42,11 @@ class LoginForm(ctk.CTk):
         # Ô nhập tài khoản (Login name)
         self.txt_username = ctk.CTkEntry(
             self.frame, 
-            placeholder_text="Tên đăng nhập (Login Name)", 
+            placeholder_text="Tên đăng nhập (admin / nv_mai)", 
             width=300, 
             height=40
         )
-        self.txt_username.pack(pady=(5, 3))
-        self.txt_username.bind("<KeyRelease>", self.on_username_change)
-        self.txt_username.bind("<FocusOut>", self.on_username_change)
-
-        # Nhãn auto hiện thông tin Employee ID khi gõ username
-        self.lbl_employee_info = ctk.CTkLabel(
-            self.frame,
-            text="",
-            font=ctk.CTkFont(size=12),
-            text_color="#38BDF8"
-        )
-        self.lbl_employee_info.pack(pady=(0, 8))
+        self.txt_username.pack(pady=(5, 12))
 
         # Ô nhập mật khẩu
         self.txt_password = ctk.CTkEntry(
@@ -66,7 +56,17 @@ class LoginForm(ctk.CTk):
             width=300, 
             height=40
         )
-        self.txt_password.pack(pady=5)
+        self.txt_password.pack(pady=(0, 15))
+
+        # Gợi ý tài khoản thử nghiệm
+        self.lbl_hints = ctk.CTkLabel(
+            self.frame,
+            text="Tài khoản thử nghiệm (Mật khẩu: 123456):\n• Quản lý: admin\n• Thủ thư: nv_mai / nv_nam\n• Độc giả tra cứu: docgia",
+            font=ctk.CTkFont(size=11),
+            text_color="#9CA3AF",
+            justify="left"
+        )
+        self.lbl_hints.pack(pady=(0, 15))
 
         # Nút đăng nhập
         self.btn_login = ctk.CTkButton(
@@ -77,7 +77,7 @@ class LoginForm(ctk.CTk):
             font=ctk.CTkFont(weight="bold"),
             command=self.handle_login
         )
-        self.btn_login.pack(pady=(20, 10))
+        self.btn_login.pack(pady=(0, 10))
 
         # Phím tắt Enter để đăng nhập
         self.bind("<Return>", lambda event: self.handle_login())
@@ -90,27 +90,6 @@ class LoginForm(ctk.CTk):
         y = (self.winfo_screenheight() // 2) - (height // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
-    def on_username_change(self, event=None):
-        """Auto hiển thị Employee ID và họ tên khi người dùng gõ username."""
-        login_name = self.txt_username.get().strip()
-        if not login_name:
-            self.lbl_employee_info.configure(text="")
-            return
-
-        from db import tra_cuu_nhan_vien_nhanh
-        emp = tra_cuu_nhan_vien_nhanh(login_name)
-        if emp:
-            role_display = "Quản lý" if emp["RoleName"] == "QUANLY" else "Thủ thư"
-            self.lbl_employee_info.configure(
-                text=f"Mã NV: {emp['MANV']} - {emp['HoTen']} ({role_display})",
-                text_color="#38BDF8"
-            )
-        else:
-            self.lbl_employee_info.configure(
-                text="Chưa tìm thấy nhân viên trong CSDL",
-                text_color="#9CA3AF"
-            )
-
     def handle_login(self):
         username = self.txt_username.get().strip()
         password = self.txt_password.get().strip()
@@ -120,30 +99,41 @@ class LoginForm(ctk.CTk):
             return
 
         try:
-            from db import dang_nhap_he_thong
             user = dang_nhap_he_thong(username, password)
             if user:
-                # Ẩn cửa sổ đăng nhập và khởi chạy Dashboard
-                self.withdraw()
-                from ui.main_dashboard import MainDashboard
-
-                def on_dashboard_close():
-                    self.destroy()
-
-                dashboard = MainDashboard(user, on_logout=self.show_login_again)
-                dashboard.protocol("WM_DELETE_WINDOW", on_dashboard_close)
-                dashboard.mainloop()
+                self.logged_in_user = user
+                self.destroy()  # Đóng cửa sổ login sạch sẽ để nhường chỗ cho Dashboard
         except ValueError as val_err:
             messagebox.showerror("Thất bại", str(val_err))
             self.txt_password.delete(0, 'end')
         except Exception as err:
             messagebox.showerror("Lỗi CSDL", str(err))
 
-    def show_login_again(self):
-        """Hiện lại cửa sổ đăng nhập khi bấm Đăng xuất."""
-        self.txt_password.delete(0, 'end')
-        self.deiconify()
+def start_application():
+    from ui.main_dashboard import MainDashboard
+
+    while True:
+        # Bước 1: Mở màn hình đăng nhập
+        login_app = LoginForm()
+        login_app.mainloop()
+
+        # Nếu người dùng tắt cửa sổ đăng nhập mà không đăng nhập -> Thoát hẳn
+        if not login_app.logged_in_user:
+            break
+
+        # Bước 2: Đăng nhập thành công -> Mở màn hình Dashboard
+        current_user = login_app.logged_in_user
+        logout_holder = {"logged_out": False}
+
+        def on_logout():
+            logout_holder["logged_out"] = True
+
+        dashboard = MainDashboard(current_user, on_logout=on_logout)
+        dashboard.mainloop()
+
+        # Nếu người dùng đóng Dashboard bằng nút X (không phải bấm Đăng xuất) -> Thoát hẳn
+        if not logout_holder["logged_out"]:
+            break
 
 if __name__ == "__main__":
-    app = LoginForm()
-    app.mainloop()
+    start_application()

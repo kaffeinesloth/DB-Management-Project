@@ -173,25 +173,30 @@ class TabSach(ctk.CTkFrame):
         action_bar = ctk.CTkFrame(left_frame, fg_color="transparent")
         action_bar.grid(row=3, column=0, padx=15, pady=(0, 15), sticky="ew")
 
-        btn_toggle_status = ctk.CTkButton(
-            action_bar,
-            text="Báo Hỏng / Khôi Phục Sách",
-            fg_color="#D97706",
-            hover_color="#B45309",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_toggle_tinh_trang
-        )
-        btn_toggle_status.pack(side="left", padx=(0, 10))
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+        is_manager = (self.current_user.get("RoleName") == "QUANLY")
 
-        self.btn_delete_book = ctk.CTkButton(
-            action_bar,
-            text="Hủy / Thanh Lý Sách",
-            fg_color="#EF4444",
-            hover_color="#DC2626",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_delete_book
-        )
-        self.btn_delete_book.pack(side="left", padx=(10, 0))
+        if not is_docgia:
+            btn_toggle_status = ctk.CTkButton(
+                action_bar,
+                text="Báo Hỏng / Khôi Phục Sách",
+                fg_color="#D97706",
+                hover_color="#B45309",
+                font=ctk.CTkFont(weight="bold"),
+                command=self.handle_toggle_tinh_trang
+            )
+            btn_toggle_status.pack(side="left", padx=(0, 10))
+
+        if is_manager:
+            self.btn_delete_book = ctk.CTkButton(
+                action_bar,
+                text="Hủy / Thanh Lý Sách",
+                fg_color="#EF4444",
+                hover_color="#DC2626",
+                font=ctk.CTkFont(weight="bold"),
+                command=self.handle_delete_book
+            )
+            self.btn_delete_book.pack(side="left", padx=(10, 0))
 
     def create_right_panel(self):
         right_frame = ctk.CTkScrollableFrame(self, width=340, corner_radius=12)
@@ -203,6 +208,47 @@ class TabSach(ctk.CTkFrame):
             font=ctk.CTkFont(size=16, weight="bold")
         )
         lbl_panel_title.pack(pady=(15, 12), anchor="w")
+
+        is_manager = (self.current_user.get("RoleName") == "QUANLY")
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+
+        if not is_manager:
+            notice_card = ctk.CTkFrame(right_frame, fg_color=("#E2E8F0", "#1F2937"), corner_radius=10)
+            notice_card.pack(fill="x", pady=20, padx=5)
+
+            lbl_icon = ctk.CTkLabel(
+                notice_card, 
+                text="🔒 PHÂN QUYỀN VAI TRÒ", 
+                font=ctk.CTkFont(size=13, weight="bold"), 
+                text_color="#F59E0B"
+            )
+            lbl_icon.pack(anchor="w", padx=12, pady=(12, 6))
+
+            if is_docgia:
+                msg = (
+                    "Tài khoản hiện tại có vai trò ĐỘC GIẢ (Sinh viên tra cứu).\n\n"
+                    "Theo quy chế bảo mật thư viện:\n"
+                    "• Sinh viên chỉ có quyền tra cứu, tìm kiếm và xem danh mục sách hiện có.\n\n"
+                    "• Các thao tác mượn/trả, nhập kho và biên mục do cán bộ thư viện thực hiện."
+                )
+            else:
+                msg = (
+                    "Tài khoản hiện tại có vai trò THỦ THƯ (Tổ phục vụ bạn đọc).\n\n"
+                    "Theo quy chế phân công thư viện:\n"
+                    "• Nghiệp vụ tạo đầu sách mới (ISBN), nhập sách vào kho và thanh lý sách "
+                    "thuộc thẩm quyền của Ban Quản Lý (Role QUANLY).\n\n"
+                    "• Thủ thư thực hiện tra cứu danh mục và cập nhật tình trạng sách hư hỏng khi phục vụ mượn/trả."
+                )
+            lbl_msg = ctk.CTkLabel(
+                notice_card, 
+                text=msg, 
+                font=ctk.CTkFont(size=12), 
+                text_color="#9CA3AF", 
+                justify="left", 
+                wraplength=280
+            )
+            lbl_msg.pack(anchor="w", padx=12, pady=(0, 15))
+            return
 
         # Form 1: Thêm cuốn sách vật lý (SACH)
         lbl_cuon_title = ctk.CTkLabel(
@@ -350,6 +396,8 @@ class TabSach(ctk.CTkFrame):
 
     def load_comboboxes(self):
         """Nạp dữ liệu cho các ComboBox chọn ISBN, Ngăn tủ, Thể loại, Tác giả, Ngôn ngữ."""
+        if not hasattr(self, "cb_isbn"):
+            return
         try:
             # ISBN
             isbn_list = SachDAO.get_all_isbn()
@@ -591,6 +639,8 @@ class TabSach(ctk.CTkFrame):
 
     def clear_cuon_form(self):
         """Làm mới form nhập cuốn sách vật lý và khôi phục gợi ý placeholder."""
+        if not hasattr(self, "txt_masach"):
+            return
         self.focus_set()
         self.txt_masach.delete(0, "end")
         if hasattr(self, "isbn_map") and self.isbn_map:
@@ -600,6 +650,8 @@ class TabSach(ctk.CTkFrame):
 
     def clear_isbn_form(self):
         """Làm mới form tạo đầu sách mới và khôi phục gợi ý placeholder."""
+        if not hasattr(self, "txt_new_isbn"):
+            return
         self.focus_set()
         self.txt_new_isbn.delete(0, "end")
         self.txt_tensach.delete(0, "end")

@@ -241,3 +241,25 @@ class SachDAO:
                 if 'REFERENCE constraint' in str(e) or 'FK_' in str(e):
                     raise ValueError("Không thể hủy sách do đã có lịch sử mượn trả (ràng buộc CSDL). Vui lòng dùng tính năng 'Báo Hỏng' thay thế!")
                 raise e
+
+    @staticmethod
+    def get_danh_sach_sach_san_sang() -> List[Dict[str, Any]]:
+        """
+        Lấy danh sách tất cả các cuốn sách vật lý đang sẵn sàng cho mượn (CHOMUON = 0 AND TINHTRANG = 1).
+        Phục vụ gợi ý (recommendation) cho thủ thư khi lập phiếu mượn.
+        """
+        query = """
+            SELECT s.MASACH, i.TENSACH, s.ISBN, ISNULL(i.GIA, 0) AS GiaBia,
+                   ISNULL(nt.KE + ' - ' + nt.MOTA, N'Chưa xếp') AS ViTri
+            FROM dbo.SACH s
+            INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN
+            LEFT JOIN dbo.NGANTU nt ON s.MANGANTU = nt.MANGANTU
+            WHERE s.CHOMUON = 0 AND s.TINHTRANG = 1
+            ORDER BY i.TENSACH ASC, s.MASACH ASC;
+        """
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            cols = [col[0] for col in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+

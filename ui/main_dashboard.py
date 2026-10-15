@@ -36,8 +36,8 @@ class MainDashboard(ctk.CTk):
         self.create_sidebar()
         self.create_content_area()
 
-        # Mặc định mở Tab Độc giả (hoặc Tab đầu tiên)
-        self.select_tab("docgia")
+        # Mặc định mở Tab Sách (áp dụng được cho cả Quản lý, Thủ thư và Độc giả)
+        self.select_tab("sach")
 
     def center_window(self):
         self.update_idletasks()
@@ -79,12 +79,22 @@ class MainDashboard(ctk.CTk):
         )
         lbl_name.pack(anchor="w", padx=12, pady=(10, 2))
 
-        lbl_manv = ctk.CTkLabel(
-            profile_frame, 
-            text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}", 
-            font=ctk.CTkFont(size=12),
-            text_color="#9CA3AF"
-        )
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+
+        if not is_docgia:
+            lbl_manv = ctk.CTkLabel(
+                profile_frame, 
+                text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}", 
+                font=ctk.CTkFont(size=12),
+                text_color="#9CA3AF"
+            )
+        else:
+            lbl_manv = ctk.CTkLabel(
+                profile_frame, 
+                text="Đối tượng: Bạn đọc", 
+                font=ctk.CTkFont(size=12),
+                text_color="#9CA3AF"
+            )
         lbl_manv.pack(anchor="w", padx=12, pady=(0, 2))
 
         lbl_login = ctk.CTkLabel(
@@ -95,23 +105,30 @@ class MainDashboard(ctk.CTk):
         )
         lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
 
+        role_name = self.current_user.get('RoleName', 'THUTHU')
+        role_color = "#10B981" if role_name == "QUANLY" else ("#A855F7" if is_docgia else "#60A5FA")
         lbl_role = ctk.CTkLabel(
             profile_frame, 
-            text=f"Quyền: {self.current_user.get('RoleName', 'THUTHU')}", 
+            text=f"Quyền: {role_name}", 
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#10B981" if self.current_user.get('RoleName') == "QUANLY" else "#60A5FA"
+            text_color=role_color
         )
         lbl_role.pack(anchor="w", padx=12, pady=(0, 10))
 
-        # Các nút chuyển Tab điều hướng
+        # Các nút chuyển Tab điều hướng theo phân quyền
         self.nav_buttons = {}
 
-        tabs = [
-            ("sach", "Quản Lý Sách"),
-            ("docgia", "Quản Lý Độc Giả"),
-            ("muontra", "Mượn / Trả Sách"),
-            ("thongke", "Báo Cáo Thống Kê")
-        ]
+        if is_docgia:
+            tabs = [
+                ("sach", "Tra Cứu Sách")
+            ]
+        else:
+            tabs = [
+                ("sach", "Quản Lý Sách"),
+                ("docgia", "Quản Lý Độc Giả"),
+                ("muontra", "Mượn / Trả Sách"),
+                ("thongke", "Báo Cáo Thống Kê")
+            ]
 
         for idx, (tab_id, tab_title) in enumerate(tabs, start=3):
             btn = ctk.CTkButton(
@@ -146,13 +163,20 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        # Khởi tạo 4 Tabs giao diện hoàn chỉnh
-        self.views = {
-            "sach": TabSach(self.main_container, self.current_user),
-            "docgia": TabDocGia(self.main_container, self.current_user),
-            "muontra": TabMuonTra(self.main_container, self.current_user),
-            "thongke": TabThongKe(self.main_container, self.current_user),
-        }
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+
+        # Khởi tạo Tabs giao diện theo quyền
+        if is_docgia:
+            self.views = {
+                "sach": TabSach(self.main_container, self.current_user)
+            }
+        else:
+            self.views = {
+                "sach": TabSach(self.main_container, self.current_user),
+                "docgia": TabDocGia(self.main_container, self.current_user),
+                "muontra": TabMuonTra(self.main_container, self.current_user),
+                "thongke": TabThongKe(self.main_container, self.current_user),
+            }
 
     def create_placeholder_tab(self, title: str, desc: str) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.main_container, corner_radius=12)
@@ -191,9 +215,9 @@ class MainDashboard(ctk.CTk):
         from tkinter import messagebox
         confirm = messagebox.askyesno("Đăng xuất", "Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")
         if confirm:
-            self.destroy()
             if self.on_logout:
                 self.on_logout()
+            self.destroy()
 
 if __name__ == "__main__":
     # Chạy thử trực tiếp với user mẫu

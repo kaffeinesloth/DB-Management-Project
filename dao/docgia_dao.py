@@ -54,8 +54,8 @@ class DocGiaDAO:
 
     @staticmethod
     def check_cmnd_exists(socmnd: str, exclude_id: Optional[int] = None) -> bool:
-        """Kiểm tra số CMND/CCCD đã tồn tại trong hệ thống hay chưa."""
-        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE SOCMND = ?"
+        """Kiểm tra số CMND/CCCD đã tồn tại trên thẻ đang hoạt động hay chưa."""
+        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE SOCMND = ? AND HOATDONG = 1"
         params = [socmnd.strip()]
         if exclude_id:
             query += " AND MADG != ?"
@@ -68,10 +68,10 @@ class DocGiaDAO:
 
     @staticmethod
     def check_email_exists(email: str, exclude_id: Optional[int] = None) -> bool:
-        """Kiểm tra email đã tồn tại trong hệ thống hay chưa."""
+        """Kiểm tra email đã tồn tại trên thẻ đang hoạt động hay chưa."""
         if not email or not email.strip():
             return False
-        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE EMAILDG = ?"
+        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE EMAILDG = ? AND HOATDONG = 1"
         params = [email.strip()]
         if exclude_id:
             query += " AND MADG != ?"

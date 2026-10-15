@@ -37,17 +37,20 @@ class TabThongKe(ctk.CTkFrame):
         for i in range(4):
             cards_container.grid_columnconfigure(i, weight=1)
 
+        # Đồng bộ 1 màu xanh dương (#3B82F6) duy nhất cho toàn bộ các thẻ KPI
+        UNIFIED_COLOR = "#3B82F6"
+
         # Card 1: Tổng Đầu Sách
-        self.card1 = self.create_card(cards_container, 0, "Tổng Đầu Sách (ISBN)", "0", "#3B82F6")
+        self.card1 = self.create_card(cards_container, 0, "Tổng Đầu Sách (ISBN)", "0", UNIFIED_COLOR)
 
         # Card 2: Cuốn Sách / Đang Mượn
-        self.card2 = self.create_card(cards_container, 1, "Cuốn Sách (Kho / Mượn)", "0 / 0", "#10B981")
+        self.card2 = self.create_card(cards_container, 1, "Cuốn Sách (Kho / Mượn)", "0 / 0", UNIFIED_COLOR)
 
         # Card 3: Độc Giả Hoạt Động
-        self.card3 = self.create_card(cards_container, 2, "Độc Giả Đang Hoạt Động", "0 thẻ", "#8B5CF6")
+        self.card3 = self.create_card(cards_container, 2, "Độc Giả Đang Hoạt Động", "0 thẻ", UNIFIED_COLOR)
 
         # Card 4: Sách Quá Hạn & Tiền Phạt
-        self.card4 = self.create_card(cards_container, 3, "Sách Quá Hạn (Phạt dự kiến)", "0 cuốn (0 đ)", "#EF4444")
+        self.card4 = self.create_card(cards_container, 3, "Sách Quá Hạn (Phạt dự kiến)", "0 cuốn (0 đ)", UNIFIED_COLOR)
 
     def create_card(self, parent, col, title, initial_value, border_color):
         card = ctk.CTkFrame(

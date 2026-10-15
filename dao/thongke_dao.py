@@ -4,48 +4,33 @@ from db import get_connection
 class ThongKeDAO:
     """
     Data Access Object (DAO) xử lý các truy vấn Báo Cáo Thống Kê theo yêu cầu đề tài:
-    1. Thống kê độc giả mượn sách quá hạn (TRA = 0 và trễ hạn).
+    1. Thống kê độc giả mượn sách quá hạn (TRA = 0 và trễ hạn) - Sử dụng View v_ChiTietPhieuMuon_Phat.
     2. Thống kê tần suất mượn sách (Top đầu sách mượn nhiều nhất / ít nhất).
     """
 
     @staticmethod
     def get_doc_gia_qua_han() -> List[Dict[str, Any]]:
         """
-        Lấy danh sách các độc giả đang mượn sách quá hạn:
+        Lấy danh sách các độc giả đang mượn sách quá hạn từ View thời gian thực:
         - Mượn mang về (HINHTHUC=1): Quá 30 ngày.
         - Mượn tại chỗ (HINHTHUC=0): Quá 0 ngày (chưa trả trong ngày).
         """
         query = """
             SELECT 
-                dg.MADG,
-                RTRIM(dg.HODG) + ' ' + RTRIM(dg.TENDG) AS HoTenDG,
-                dg.DIENTHOAI,
-                dg.EMAILDG,
-                pm.MAPHIEU,
-                ct.MASACH,
-                i.TENSACH,
-                CASE WHEN pm.HINHTHUC = 1 THEN N'Mang về' ELSE N'Tại chỗ' END AS HinhThuc,
-                CONVERT(VARCHAR(10), pm.NGAYMUON, 103) AS NgayMuonStr,
-                DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) AS SoNgayDaMuon,
-                CASE 
-                    WHEN pm.HINHTHUC = 1 THEN DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) - 30
-                    ELSE DATEDIFF(DAY, pm.NGAYMUON, GETDATE())
-                END AS SoNgayTre,
-                (CASE 
-                    WHEN pm.HINHTHUC = 1 THEN (DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) - 30) * 500
-                    ELSE DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) * 500
-                END) AS TienPhatUocTinh
-            FROM dbo.CT_PHIEUMUON ct
-            INNER JOIN dbo.PHIEUMUON pm ON ct.MAPHIEU = pm.MAPHIEU
-            INNER JOIN dbo.DOCGIA dg ON pm.MADG = dg.MADG
-            INNER JOIN dbo.SACH s ON ct.MASACH = s.MASACH
-            INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN
-            WHERE ct.TRA = 0
-              AND (
-                  (pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 30)
-                  OR
-                  (pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 0)
-              )
+                MADG,
+                HoTenDG,
+                DIENTHOAI,
+                EMAILDG,
+                MAPHIEU,
+                MASACH,
+                TENSACH,
+                HinhThucStr AS HinhThuc,
+                CONVERT(VARCHAR(10), NGAYMUON, 103) AS NgayMuonStr,
+                SoNgayDaMuon,
+                SoNgayTre,
+                TienPhatTre AS TienPhatUocTinh
+            FROM dbo.v_ChiTietPhieuMuon_Phat
+            WHERE TRA = 0 AND SoNgayTre > 0
             ORDER BY SoNgayTre DESC;
         """
         with get_connection() as conn:
@@ -99,22 +84,11 @@ class ThongKeDAO:
             cursor.execute("SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1;")
             tong_docgia = cursor.fetchone()[0]
 
-            # Số sách quá hạn
+            # Số sách quá hạn và tổng tiền phạt từ View
             query_qh = """
-                SELECT COUNT(*), ISNULL(SUM(
-                    CASE 
-                        WHEN pm.HINHTHUC = 1 THEN (DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) - 30) * 500
-                        ELSE DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) * 500
-                    END
-                ), 0)
-                FROM dbo.CT_PHIEUMUON ct
-                INNER JOIN dbo.PHIEUMUON pm ON ct.MAPHIEU = pm.MAPHIEU
-                WHERE ct.TRA = 0
-                  AND (
-                      (pm.HINHTHUC = 1 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 30)
-                      OR
-                      (pm.HINHTHUC = 0 AND DATEDIFF(DAY, pm.NGAYMUON, GETDATE()) > 0)
-                  );
+                SELECT COUNT(*), ISNULL(SUM(TienPhatTre), 0)
+                FROM dbo.v_ChiTietPhieuMuon_Phat
+                WHERE TRA = 0 AND SoNgayTre > 0;
             """
             cursor.execute(query_qh)
             row_qh = cursor.fetchone()
