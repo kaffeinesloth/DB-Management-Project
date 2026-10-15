@@ -1,0 +1,225 @@
+/*
+    Library Management System - SQL Server schema
+
+    Based on De4-QLTV_Unicode_Fixed.docx.
+
+    Source clarifications applied:
+    - Unicode descriptive text uses NVARCHAR.
+    - ISBN is CHAR(10) everywhere so its foreign keys are type-compatible.
+    - MASACH is VARCHAR(10) everywhere; the document lists VARCHAR(20) only in
+      CT_PHIEUMUON, which would be incompatible with SACH.MASACH.
+    - DOCGIA.DIACHI and DOCGIA.DIENTHOAI have no types or lengths in the
+      document. They use NVARCHAR(100) and VARCHAR(11), consistent with the
+      equivalent NHANVIEN fields.
+    - NHAXB and NGANTU.KE are stored as descriptive text. The document marks
+      them as foreign keys but defines no referenced NHAXB or KE table.
+*/
+
+IF DB_ID(N'LibraryManagement') IS NULL
+BEGIN
+    EXEC(N'CREATE DATABASE [LibraryManagement]');
+END;
+GO
+
+USE [LibraryManagement];
+GO
+
+IF OBJECT_ID(N'dbo.THELOAI', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.THELOAI
+    (
+        MATL        CHAR(5)       NOT NULL,
+        THELOAI     NVARCHAR(50)  NOT NULL,
+        CONSTRAINT PK_THELOAI PRIMARY KEY (MATL),
+        CONSTRAINT UQ_THELOAI_TEN UNIQUE (THELOAI)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.NGONNGU', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.NGONNGU
+    (
+        MANGONNGU   INT           IDENTITY(1,1) NOT NULL,
+        NGONNGU     NVARCHAR(50)  NOT NULL,
+        CONSTRAINT PK_NGONNGU PRIMARY KEY (MANGONNGU),
+        CONSTRAINT UQ_NGONNGU_TEN UNIQUE (NGONNGU)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.NGANTU', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.NGANTU
+    (
+        MANGANTU    INT            IDENTITY(1,1) NOT NULL,
+        MOTA        NVARCHAR(50)   NULL,
+        KE          NVARCHAR(100)  NOT NULL,
+        CONSTRAINT PK_NGANTU PRIMARY KEY (MANGANTU)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.TACGIA', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TACGIA
+    (
+        MATACGIA      INT            IDENTITY(1,1) NOT NULL,
+        HOTENTG       NVARCHAR(50)   NOT NULL,
+        DIACHITG      NVARCHAR(100)  NULL,
+        DIENTHOAITG   VARCHAR(11)    NULL,
+        CONSTRAINT PK_TACGIA PRIMARY KEY (MATACGIA)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.DOCGIA', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.DOCGIA
+    (
+        MADG          BIGINT         IDENTITY(1,1) NOT NULL,
+        HODG          NVARCHAR(50)   NOT NULL,
+        TENDG         NVARCHAR(12)   NOT NULL,
+        EMAILDG       NVARCHAR(50)   NULL,
+        SOCMND        VARCHAR(12)    NOT NULL,
+        GIOITINH      BIT            NULL,
+        NGAYSINH      SMALLDATETIME  NULL,
+        DIACHI        NVARCHAR(100)  NULL,
+        DIENTHOAI     VARCHAR(11)    NULL,
+        NGAYLAMTHE    SMALLDATETIME  NOT NULL
+            CONSTRAINT DF_DOCGIA_NGAYLAMTHE DEFAULT (GETDATE()),
+        NGAYHETHAN    SMALLDATETIME  NOT NULL,
+        HOATDONG      BIT            NOT NULL
+            CONSTRAINT DF_DOCGIA_HOATDONG DEFAULT (1),
+        CONSTRAINT PK_DOCGIA PRIMARY KEY (MADG),
+        CONSTRAINT UQ_DOCGIA_SOCMND UNIQUE (SOCMND),
+        CONSTRAINT CK_DOCGIA_NGAYHETHAN CHECK (NGAYHETHAN >= NGAYLAMTHE)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.NHANVIEN', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.NHANVIEN
+    (
+        MANV          INT            IDENTITY(1,1) NOT NULL,
+        HONV          NVARCHAR(50)   NOT NULL,
+        TENNV         NVARCHAR(12)   NOT NULL,
+        GIOITINH      BIT            NULL,
+        DIACHI        NVARCHAR(100)  NULL,
+        DIENTHOAI     VARCHAR(11)    NULL,
+        EMAIL         VARCHAR(50)    NULL,
+        CONSTRAINT PK_NHANVIEN PRIMARY KEY (MANV)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.ISBN', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ISBN
+    (
+        ISBN          CHAR(10)        NOT NULL,
+        TENSACH       NVARCHAR(100)   NOT NULL,
+        KHOSACH       NVARCHAR(5)     NULL,
+        NOIDUNG       NVARCHAR(300)   NULL,
+        HINHANHPATH   NVARCHAR(50)    NULL,
+        NGAYXUATBAN   SMALLDATETIME   NULL,
+        LANXUATBAN    INT             NULL,
+        SOTRANG       INT             NULL,
+        GIA           BIGINT          NULL,
+        NHAXB         NVARCHAR(100)   NULL,
+        MANGONNGU     INT             NOT NULL,
+        MATL          CHAR(5)         NOT NULL,
+        CONSTRAINT PK_ISBN PRIMARY KEY (ISBN),
+        CONSTRAINT FK_ISBN_NGONNGU FOREIGN KEY (MANGONNGU)
+            REFERENCES dbo.NGONNGU (MANGONNGU),
+        CONSTRAINT FK_ISBN_THELOAI FOREIGN KEY (MATL)
+            REFERENCES dbo.THELOAI (MATL),
+        CONSTRAINT CK_ISBN_LANXUATBAN CHECK (LANXUATBAN IS NULL OR LANXUATBAN > 0),
+        CONSTRAINT CK_ISBN_SOTRANG CHECK (SOTRANG IS NULL OR SOTRANG > 0),
+        CONSTRAINT CK_ISBN_GIA CHECK (GIA IS NULL OR GIA >= 0)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.SACH', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.SACH
+    (
+        MASACH        VARCHAR(10)  NOT NULL,
+        ISBN          CHAR(10)     NOT NULL,
+        TINHTRANG     BIT          NOT NULL
+            CONSTRAINT DF_SACH_TINHTRANG DEFAULT (1),
+        CHOMUON       BIT          NOT NULL
+            CONSTRAINT DF_SACH_CHOMUON DEFAULT (0),
+        MANGANTU      INT          NOT NULL,
+        CONSTRAINT PK_SACH PRIMARY KEY (MASACH),
+        CONSTRAINT FK_SACH_ISBN FOREIGN KEY (ISBN)
+            REFERENCES dbo.ISBN (ISBN),
+        CONSTRAINT FK_SACH_NGANTU FOREIGN KEY (MANGANTU)
+            REFERENCES dbo.NGANTU (MANGANTU)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.TACGIA_SACH', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TACGIA_SACH
+    (
+        MATACGIA      INT       NOT NULL,
+        ISBN          CHAR(10)  NOT NULL,
+        CONSTRAINT PK_TACGIA_SACH PRIMARY KEY (MATACGIA, ISBN),
+        CONSTRAINT FK_TACGIA_SACH_TACGIA FOREIGN KEY (MATACGIA)
+            REFERENCES dbo.TACGIA (MATACGIA),
+        CONSTRAINT FK_TACGIA_SACH_ISBN FOREIGN KEY (ISBN)
+            REFERENCES dbo.ISBN (ISBN)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.PHIEUMUON', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PHIEUMUON
+    (
+        MAPHIEU       BIGINT         IDENTITY(1,1) NOT NULL,
+        MADG          BIGINT         NOT NULL,
+        HINHTHUC      BIT            NOT NULL,
+        NGAYMUON      SMALLDATETIME  NOT NULL
+            CONSTRAINT DF_PHIEUMUON_NGAYMUON DEFAULT (GETDATE()),
+        MANV          INT            NOT NULL,
+        CONSTRAINT PK_PHIEUMUON PRIMARY KEY (MAPHIEU),
+        CONSTRAINT FK_PHIEUMUON_DOCGIA FOREIGN KEY (MADG)
+            REFERENCES dbo.DOCGIA (MADG),
+        CONSTRAINT FK_PHIEUMUON_NHANVIEN FOREIGN KEY (MANV)
+            REFERENCES dbo.NHANVIEN (MANV)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.CT_PHIEUMUON', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.CT_PHIEUMUON
+    (
+        MAPHIEU          BIGINT         NOT NULL,
+        MASACH           VARCHAR(10)    NOT NULL,
+        NGAYTRA          SMALLDATETIME  NULL,
+        TINHTRANGMUON    BIT            NOT NULL,
+        TRA              BIT            NOT NULL
+            CONSTRAINT DF_CT_PHIEUMUON_TRA DEFAULT (0),
+        MANVNS           INT            NULL,
+        CONSTRAINT PK_CT_PHIEUMUON PRIMARY KEY (MAPHIEU, MASACH),
+        CONSTRAINT FK_CT_PHIEUMUON_PHIEUMUON FOREIGN KEY (MAPHIEU)
+            REFERENCES dbo.PHIEUMUON (MAPHIEU),
+        CONSTRAINT FK_CT_PHIEUMUON_SACH FOREIGN KEY (MASACH)
+            REFERENCES dbo.SACH (MASACH),
+        CONSTRAINT FK_CT_PHIEUMUON_NHANVIEN FOREIGN KEY (MANVNS)
+            REFERENCES dbo.NHANVIEN (MANV),
+        CONSTRAINT CK_CT_PHIEUMUON_RETURN_STATE CHECK
+        (
+            (TRA = 0 AND NGAYTRA IS NULL AND MANVNS IS NULL)
+            OR
+            (TRA = 1 AND NGAYTRA IS NOT NULL AND MANVNS IS NOT NULL)
+        )
+    );
+END;
+GO

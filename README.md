@@ -13,7 +13,7 @@ Hệ thống được thiết kế **tuân thủ nghiêm ngặt 100% cấu trúc
 * **Trigger tự động đồng bộ** trạng thái sách (`SACH.CHOMUON`) khi mượn/trả ở cấp CSDL.
 * **Filtered Unique Index** kiểm soát tính duy nhất của CMND/Email trên các thẻ đang hoạt động (`HOATDONG = 1`), cho phép cấp lại mã thẻ mới khi mất thẻ mà không gây lỗi trùng lặp.
 * **View tính toán phái sinh thời gian thực (Chuẩn hóa 3NF)**: Tự động tính số ngày trễ hạn và tiền phạt (500 VNĐ/ngày) mà không cần thêm cột dư thừa vào bảng vật lý.
-* **Bảo mật & Phân quyền RBAC:** Phân cấp quyền hạn rõ ràng giữa Ban Quản Lý (`QUANLY`) và Tổ Phục Vụ Bạn Đọc (`THUTHU`) theo đúng quy chế nghiệp vụ thư viện, xóa bỏ hoàn toàn hardcode mật khẩu quản trị.
+* **Bảo mật & Phân quyền RBAC:** Phân cấp quyền hạn rõ ràng giữa Ban Quản Lý (`QUANLY`), Tổ Phục Vụ Bạn Đọc (`THUTHU`), và Độc Giả (`DOCGIA`) theo đúng quy chế nghiệp vụ thư viện, xóa bỏ hoàn toàn hardcode mật khẩu quản trị.
 
 ---
 
@@ -21,7 +21,7 @@ Hệ thống được thiết kế **tuân thủ nghiêm ngặt 100% cấu trúc
 
 * Ngôn ngữ: Python 3.10+
 * Giao diện (GUI): CustomTkinter, Tkinter (Dark Theme hiện đại #1E2229, #242830)
-* Hệ quản trị CSDL: Microsoft SQL Server (SQL Express / Local Instance)
+* Hệ quản trị CSDL: Microsoft SQL Server (SQL Express / Local Instance / Docker)
 * Thư viện kết nối CSDL: pyodbc (Hỗ trợ ODBC Driver 18 & 17 for SQL Server)
 * Đối tượng CSDL nâng cao: SQL Server Logins, DB Roles, Filtered Indexes, Views, Triggers, Stored Procedures.
 
@@ -32,8 +32,8 @@ Hệ thống được thiết kế **tuân thủ nghiêm ngặt 100% cấu trúc
 ### 3.1. Đăng Nhập & Phân Quyền Bảo Mật (login.py & db.py)
 * Xác thực tài khoản trực tiếp bằng SQL Server Login (UID / PWD).
 * Không lưu mật khẩu plain-text, không hardcode tài khoản quản trị `sa`.
-* Tự động nhận diện Mã nhân viên (MANV), Họ tên và Nhóm quyền (`QUANLY` / `THUTHU`) qua Stored Procedure `sp_LayThongTinHienTai`.
-* Giao diện tự động thích ứng theo Role: Tự động ẩn các tính năng quản trị kho/sách đối với Thủ thư.
+* Tự động nhận diện Mã nhân viên (MANV), Họ tên và Nhóm quyền (`QUANLY` / `THUTHU` / `DOCGIA`) qua Stored Procedure `sp_LayThongTinNhanVien`.
+* Giao diện tự động thích ứng theo Role: Tự động ẩn các tính năng quản trị kho/sách đối với Thủ thư, và chỉ mở tra cứu sách đối với Độc giả.
 
 ### 3.2. Quản Lý Độc Giả & Thẻ Thư Viện (ui/tabs/tab_docgia.py)
 * CRUD Độc giả: Thêm mới, tra cứu đa tiêu chí (Tên, CMND/CCCD, SĐT, Email).
@@ -89,7 +89,7 @@ DB-Management-Project/
 ├── login.py                     # Màn hình Đăng nhập (SQL Server Authentication)
 ├── QLTV_11_tables (1).sql       # Kịch bản DDL 11 bảng chuẩn + View + Trigger
 ├── insert_sample_data.sql       # Kịch bản DML nạp dữ liệu mẫu
-├── setup_security_roles.sql     # Cấu hình Server Logins, DB Roles & Phân quyền
+├── setup_security_roles.sql     # Cấu hình Server Logins, DB Users & Phân quyền
 └── README.md                    # Tài liệu hướng dẫn & Báo cáo đồ án
 ```
 
@@ -103,7 +103,7 @@ DB-Management-Project/
 2. Mở và chạy lần lượt 3 file script SQL theo đúng thứ tự:
    - **File 1:** `QLTV_11_tables (1).sql` -> Tạo database QLTV, 11 bảng chuẩn, Filtered Indexes, View `v_ChiTietPhieuMuon_Phat` và Trigger `trg_DongBoTrangThaiSach`.
    - **File 2:** `insert_sample_data.sql` -> Nạp dữ liệu danh mục, sách, độc giả và nhân viên mẫu.
-   - **File 3:** `setup_security_roles.sql` -> Tạo Server Logins (`admin`, `nv_mai`, `nv_nam`), tạo Database Users, gán Database Roles (`QUANLY`, `THUTHU`) và Stored Procedure `sp_LayThongTinHienTai`.
+   - **File 3:** `setup_security_roles.sql` -> Tạo Server Logins (`admin`, `nv_mai`, `nv_nam`, `docgia`), tạo Database Users, gán Database Roles (`QUANLY`, `THUTHU`, `DOCGIA`) và Stored Procedure `sp_LayThongTinNhanVien`.
 
 ---
 
@@ -144,3 +144,21 @@ python login.py
 | **admin** | `123456` | **QUANLY** (Ban Quản Lý) | Toàn quyền: Nhập đầu sách mới, thêm sách vào kho, thanh lý sách, mượn trả, quản lý độc giả, xem báo cáo |
 | **nv_mai** | `123456` | **THUTHU** (Tổ Phục Vụ) | Nghiệp vụ phục vụ bạn đọc: Cấp thẻ độc giả, gia hạn thẻ, lập phiếu mượn/trả, báo sách hỏng, xem thống kê |
 | **nv_nam** | `123456` | **THUTHU** (Tổ Phục Vụ) | Nghiệp vụ phục vụ bạn đọc: Cấp thẻ độc giả, gia hạn thẻ, lập phiếu mượn/trả, báo sách hỏng, xem thống kê |
+| **docgia** | `123456` | **DOCGIA** (Sinh Viên) | Dành cho sinh viên tra cứu và tìm kiếm thông tin sách trong thư viện |
+
+---
+
+## 7. MÔI TRƯỜNG DOCKER & CẤU TRÚC MODULAR MỞ RỘNG (DEV SETUP)
+
+Nhóm cũng cung cấp cấu hình Docker Compose để khởi chạy nhanh cơ sở dữ liệu trên máy tính mà không cần cài đặt SQL Server cục bộ:
+
+```powershell
+# Khởi chạy SQL Server container
+docker compose up -d
+
+# Xem log khởi tạo
+docker compose logs database-init
+
+# Tắt container khi xong việc
+docker compose down
+```
