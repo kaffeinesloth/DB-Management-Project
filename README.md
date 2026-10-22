@@ -90,6 +90,9 @@ DB-Management-Project/
 ├── QLTV_11_tables (1).sql       # Kịch bản DDL 11 bảng chuẩn + View + Trigger
 ├── insert_sample_data.sql       # Kịch bản DML nạp dữ liệu mẫu
 ├── setup_security_roles.sql     # Cấu hình Server Logins, DB Users & Phân quyền
+├── compose.yaml                 # Docker Compose cho SQL Server tự động
+├── docker/                      # Script khởi tạo CSDL, maintenance & smoke tests
+├── sql/                         # Các script SQL chuẩn hóa & hợp đồng CSDL
 └── README.md                    # Tài liệu hướng dẫn & Báo cáo đồ án
 ```
 
@@ -97,7 +100,7 @@ DB-Management-Project/
 
 ## 5. HƯỚNG DẪN CÀI ĐẶT & CHẠY DỰ ÁN
 
-### Bước 1: Khởi Tạo Cơ Sở Dữ Liệu trên SQL Server
+### Cách 1: Khởi Tạo Cơ Sở Dữ Liệu trên SQL Server Cục Bộ (SSMS)
 
 1. Mở SQL Server Management Studio (SSMS) và kết nối tới máy chủ SQL Server của bạn (ví dụ: `localhost\SQLEXPRESS`).
 2. Mở và chạy lần lượt 3 file script SQL theo đúng thứ tự:
@@ -107,33 +110,44 @@ DB-Management-Project/
 
 ---
 
-### Bước 2: Cài Đặt Môi Trường Python
+### Cách 2: Khởi Tạo Nhanh Cơ Sở Dữ Liệu Bằng Docker (Khuyến nghị cho nhóm)
 
-1. Máy tính cài đặt Python 3.10 trở lên.
-2. Cài đặt các thư viện phụ thuộc:
-   ```bash
-   pip install customtkinter pyodbc
+Dự án cung cấp cấu hình Docker Compose để khởi chạy tự động SQL Server và nạp schema, sample data, smoke test:
+
+```powershell
+# Tạo cấu hình môi trường
+Copy-Item .env.example .env
+
+# Khởi chạy SQL Server container
+docker compose up -d
+
+# Xem log khởi tạo CSDL (chờ cho tới khi thấy DATABASE_CONTRACT_OK)
+docker compose logs database-init
+
+# Chạy kiểm thử smoke test (Bash/WSL)
+./docker/smoke-test.sh
+```
+
+---
+
+### Bước Cài Đặt Môi Trường Python & Chạy Ứng Dụng
+
+1. Máy tính cài đặt Python 3.10 trở lên và [Microsoft ODBC Driver 18 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+2. Tạo môi trường ảo và cài đặt thư viện phụ thuộc:
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
    ```
-3. Đảm bảo máy đã cài sẵn Microsoft ODBC Driver for SQL Server (Driver 18 hoặc 17).
-
----
-
-### Bước 3: Cấu Hình Kết Nối (db.py)
-
-Mở file `db.py` và kiểm tra tên máy chủ:
-```python
-SERVER_NAME = r"localhost\SQLEXPRESS"  # Thay đổi nếu SQL Server của bạn có tên khác
-DATABASE_NAME = "QLTV"
-```
-
----
-
-### Bước 4: Khởi Chạy Ứng Dụng
-
-Chạy file `login.py`:
-```bash
-python login.py
-```
+3. Cấu hình chuỗi kết nối trong `db.py`:
+   ```python
+   SERVER_NAME = r"localhost\SQLEXPRESS"  # Nếu dùng local SSMS, hoặc "localhost,1433" nếu dùng Docker
+   DATABASE_NAME = "QLTV"
+   ```
+4. Khởi chạy ứng dụng:
+   ```powershell
+   python login.py
+   ```
 
 ---
 
@@ -148,17 +162,39 @@ python login.py
 
 ---
 
-## 7. MÔI TRƯỜNG DOCKER & CẤU TRÚC MODULAR MỞ RỘNG (DEV SETUP)
+## 7. QUẢN LÝ DOCKER & BACKUP / RESTORE
 
-Nhóm cũng cung cấp cấu hình Docker Compose để khởi chạy nhanh cơ sở dữ liệu trên máy tính mà không cần cài đặt SQL Server cục bộ:
-
-```powershell
-# Khởi chạy SQL Server container
+### Các lệnh Docker thông dụng:
+```bash
+# Bật dịch vụ
 docker compose up -d
 
-# Xem log khởi tạo
-docker compose logs database-init
+# Kiểm tra trạng thái
+docker compose ps -a
 
-# Tắt container khi xong việc
+# Tắt dịch vụ (giữ nguyên dữ liệu volume)
 docker compose down
 ```
+
+### Sao lưu và phục hồi CSDL (Backup & Restore):
+```bash
+# Tạo bản backup
+./docker/database-maintenance.sh backup
+
+# Liệt kê các bản backup
+./docker/database-maintenance.sh list
+
+# Phục hồi CSDL
+CONFIRM_RESTORE=LibraryManagement ./docker/database-maintenance.sh restore <file_name>.bak
+```
+
+---
+
+## 8. QUY TẮC & ĐẶC TẢ CSDL (TEACHER SPECIFICATION)
+- **11 bảng chuẩn hóa**: `THELOAI`, `NGONNGU`, `NGANTU`, `TACGIA`, `DOCGIA`, `NHANVIEN`, `ISBN`, `SACH`, `TACGIA_SACH`, `PHIEUMUON`, `CT_PHIEUMUON`.
+- **Ràng buộc nghiệp vụ**:
+  - `DOCGIA`: `SOCMND` duy nhất với các thẻ đang hoạt động (`HOATDONG = 1`).
+  - `PHIEUMUON`: Mỗi độc giả mượn tối đa 3 cuốn sách chưa trả cùng lúc.
+  - `SACH`: Bản ghi mượn phải thỏa mãn `TINHTRANG = 1` (sách tốt) và `CHOMUON = 0` (chưa ai mượn).
+  - Tự động đồng bộ `CHOMUON` qua Trigger khi thêm/cập nhật `CT_PHIEUMUON`.
+  - Phạt quá hạn 30 ngày: `500 VNĐ / ngày`.
