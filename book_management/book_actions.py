@@ -8,6 +8,21 @@ class BookActions:
     """Các thao tác nghiệp vụ và truy vấn CSDL liên quan đến Sách & Kho."""
 
     @staticmethod
+    def get_all_sach() -> List[Dict[str, Any]]:
+        """Lấy toàn bộ danh sách sách vật lý trong kho."""
+        return BookActions.get_danh_sach_sach()
+
+    @staticmethod
+    def search_sach(keyword: str) -> List[Dict[str, Any]]:
+        """Tìm kiếm sách theo từ khóa (Mã sách, Tên sách, ISBN)."""
+        return BookActions.get_danh_sach_sach(keyword)
+
+    @staticmethod
+    def get_all_isbn() -> List[Dict[str, Any]]:
+        """Lấy toàn bộ danh mục đầu sách (ISBN)."""
+        return BookActions.get_danh_sach_isbn()
+
+    @staticmethod
     def get_danh_sach_sach(keyword: str = "") -> List[Dict[str, Any]]:
         """Lấy danh sách các cuốn sách vật lý (SACH) kèm thông tin chi tiết đầu sách (ISBN)."""
         pattern = f"%{keyword.strip()}%"
