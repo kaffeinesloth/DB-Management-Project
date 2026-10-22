@@ -1,265 +1,200 @@
-# Library Management System — Project 02
+# HỆ THỐNG QUẢN LÝ THƯ VIỆN (QLTV)
+> Đồ án môn học: Hệ Quản Trị Cơ Sở Dữ Liệu  
+> Đề tài: Đề 04 - Quản Lý Thư Viện (Chuẩn 11 Bảng theo đặc tả đề bài)  
+> Kiến trúc: 2-Tier Layered Architecture (Python CustomTkinter Desktop GUI + Microsoft SQL Server)
 
-Project 02 is the shared foundation for the team's final project. It contains a
-verified SQL Server database baseline and a Python/CustomTkinter interface
-scaffold.
+---
 
-## Current status
+## 1. GIỚI THIỆU ĐỒ ÁN
 
-- The Docker database setup is complete and rerunnable.
-- The physical schema contains exactly the 11 tables required by the teacher.
-- Database constraints, triggers, reporting views, permissions, sample data,
-  contract verification, backup/restore, and smoke tests are available.
-- The desktop program opens a navigation dashboard with placeholder screens.
-- Login, CRUD operations, database connections, reports, and backup controls
-  are **not implemented in the Python interface yet**. Disabled buttons and
-  empty `*_actions.py` files are intentional module boundaries for team work.
+QLTV là phần mềm quản lý thư viện máy tính để bàn (Desktop Application) được xây dựng trên ngôn ngữ Python kết hợp giao diện hiện đại CustomTkinter (Dark Mode) và hệ quản trị cơ sở dữ liệu Microsoft SQL Server.
 
-No Python screen currently changes the database. `database.py` only declares a
-future shared `pyodbc` connection.
+Hệ thống được thiết kế **tuân thủ nghiêm ngặt 100% cấu trúc 11 bảng và các cột của đề bài môn học**, đồng thời áp dụng tối đa các kỹ thuật chuyên sâu của Hệ Quản Trị Cơ Sở Dữ Liệu:
+* **Trigger tự động đồng bộ** trạng thái sách (`SACH.CHOMUON`) khi mượn/trả ở cấp CSDL.
+* **Filtered Unique Index** kiểm soát tính duy nhất của CMND/Email trên các thẻ đang hoạt động (`HOATDONG = 1`), cho phép cấp lại mã thẻ mới khi mất thẻ mà không gây lỗi trùng lặp.
+* **View tính toán phái sinh thời gian thực (Chuẩn hóa 3NF)**: Tự động tính số ngày trễ hạn và tiền phạt (500 VNĐ/ngày) mà không cần thêm cột dư thừa vào bảng vật lý.
+* **Bảo mật & Phân quyền RBAC:** Phân cấp quyền hạn rõ ràng giữa Ban Quản Lý (`QUANLY`), Tổ Phục Vụ Bạn Đọc (`THUTHU`), và Độc Giả (`DOCGIA`) theo đúng quy chế nghiệp vụ thư viện, xóa bỏ hoàn toàn hardcode mật khẩu quản trị.
 
-## 1. Prerequisites
+---
 
-Install on every team computer:
+## 2. CÔNG NGHỆ SỬ DỤNG
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with the
-  `docker compose` command
-- Python 3.10 or newer
-- Git
-- Microsoft ODBC Driver 18 for SQL Server, required when Python database work
-  begins and when importing `database.py`
+* Ngôn ngữ: Python 3.10+
+* Giao diện (GUI): CustomTkinter, Tkinter (Dark Theme hiện đại #1E2229, #242830)
+* Hệ quản trị CSDL: Microsoft SQL Server (SQL Express / Local Instance / Docker)
+* Thư viện kết nối CSDL: pyodbc (Hỗ trợ ODBC Driver 18 & 17 for SQL Server)
+* Đối tượng CSDL nâng cao: SQL Server Logins, DB Roles, Filtered Indexes, Views, Triggers, Stored Procedures.
 
-Windows users can download
-[Microsoft ODBC Driver 18](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+---
 
-On macOS, install the driver and its `unixODBC` dependency through Microsoft's
-Homebrew repository:
+## 3. CHỨC NĂNG CHÍNH & NGUYÊN LÝ THIẾT KẾ CSDL
 
-```bash
-brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-brew trust microsoft/mssql-release
-brew update
-HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
+### 3.1. Đăng Nhập & Phân Quyền Bảo Mật (login.py & db.py)
+* Xác thực tài khoản trực tiếp bằng SQL Server Login (UID / PWD).
+* Không lưu mật khẩu plain-text, không hardcode tài khoản quản trị `sa`.
+* Tự động nhận diện Mã nhân viên (MANV), Họ tên và Nhóm quyền (`QUANLY` / `THUTHU` / `DOCGIA`) qua Stored Procedure `sp_LayThongTinNhanVien`.
+* Giao diện tự động thích ứng theo Role: Tự động ẩn các tính năng quản trị kho/sách đối với Thủ thư, và chỉ mở tra cứu sách đối với Độc giả.
+
+### 3.2. Quản Lý Độc Giả & Thẻ Thư Viện (ui/tabs/tab_docgia.py)
+* CRUD Độc giả: Thêm mới, tra cứu đa tiêu chí (Tên, CMND/CCCD, SĐT, Email).
+* Nghiệp vụ mất thẻ: Khóa thẻ cũ (`HOATDONG = 0`) và cấp thẻ mới với `MADG` mới. Filtered Index `UQ_DOCGIA_SOCMND_ACTIVE` đảm bảo cùng số CMND/CCCD không bị lỗi vi phạm khóa duy nhất.
+* Thời hạn thẻ: Tự động tính ngày làm thẻ và ngày hết hạn. Hỗ trợ gia hạn thẻ (+12 tháng), khóa / mở khóa thẻ.
+
+### 3.3. Quản Lý Sách & Kho (ui/tabs/tab_sach.py)
+* Quản lý Đầu Sách (`ISBN`) và Cuốn Sách Vật Lý (`SACH`) gắn với vị trí Ngăn tủ / Kệ (`NGANTU`).
+* Kiểm kê kho: Báo hỏng (`TINHTRANG = 0`) hoặc khôi phục sách tốt (`TINHTRANG = 1`).
+* Quyền hạn rõ ràng: Chỉ tài khoản Quản lý (`QUANLY`) mới có quyền nhập đầu sách mới, thêm bản sao vật lý và thanh lý sách.
+
+### 3.4. Quản Lý Mượn / Trả Sách & Xử Phạt (ui/tabs/tab_muontra.py)
+* Ràng buộc mượn sách:
+  - Thẻ độc giả phải còn hạn (`NGAYHETHAN >= GETDATE()`) và đang hoạt động (`HOATDONG = 1`).
+  - Độc giả không được giữ quá 3 cuốn sách chưa trả.
+  - Sách mượn phải sẵn sàng (`CHOMUON = 0, TINHTRANG = 1`).
+  - Lập phiếu mượn thực hiện an toàn trong 1 SQL Transaction kèm Atomic Lock chống Race Condition.
+* Xử lý trả sách & Tính phạt:
+  - Trigger `trg_DongBoTrangThaiSach` tự động trả trạng thái sách về kho (`CHOMUON = 0`).
+  - Tính phạt trễ hạn: Mang về quá 30 ngày -> Phạt (Số ngày trễ) * 500 VNĐ.
+  - Phạt hư hỏng: Đền bù 50% giá bìa.
+  - Báo mất sách: Bồi thường 100% giá bìa.
+
+### 3.5. Báo Cáo Thống Kê (ui/tabs/tab_thongke.py)
+* Sử dụng View `v_ChiTietPhieuMuon_Phat` để đo lường KPI thời gian thực:
+  - Tổng số Đầu sách, Cuốn sách, Sách đang cho mượn, Độc giả hoạt động.
+  - Danh sách độc giả đang giữ sách quá hạn kèm số tiền phạt dự kiến.
+  - Thống kê tần suất mượn sách theo từng đầu sách (Top mượn nhiều nhất / ít nhất).
+
+---
+
+## 4. CẤU TRÚC THƯ MỤC DỰ ÁN
+
+```text
+DB-Management-Project/
+├── dao/                         # Data Access Objects (Tầng truy vấn CSDL)
+│   ├── __init__.py
+│   ├── docgia_dao.py            # DAO Quản lý độc giả & thẻ
+│   ├── sach_dao.py              # DAO Quản lý ISBN, Sách vật lý, Ngăn tủ
+│   ├── muontra_dao.py           # DAO Quản lý Mượn/Trả sách & Tính phạt
+│   └── thongke_dao.py           # DAO Thống kê KPI & Báo cáo
+├── ui/                          # User Interface (Tầng giao diện CustomTkinter)
+│   ├── __init__.py
+│   ├── ctk_patch.py             # Patch hỗ trợ placeholder cho CTkEntry
+│   ├── main_dashboard.py        # Cửa sổ chính & Sidebar điều hướng
+│   └── tabs/
+│       ├── __init__.py
+│       ├── tab_docgia.py        # Giao diện Quản lý Độc giả
+│       ├── tab_sach.py          # Giao diện Quản lý Sách & Kho (Có RBAC)
+│       ├── tab_muontra.py       # Giao diện Mượn/Trả sách & Xử phạt
+│       └── tab_thongke.py       # Giao diện Báo cáo Thống kê
+├── db.py                        # Quản lý kết nối pyodbc & Phiên đăng nhập
+├── login.py                     # Màn hình Đăng nhập (SQL Server Authentication)
+├── QLTV_11_tables (1).sql       # Kịch bản DDL 11 bảng chuẩn + View + Trigger
+├── insert_sample_data.sql       # Kịch bản DML nạp dữ liệu mẫu
+├── setup_security_roles.sql     # Cấu hình Server Logins, DB Users & Phân quyền
+├── compose.yaml                 # Docker Compose cho SQL Server tự động
+├── docker/                      # Script khởi tạo CSDL, maintenance & smoke tests
+├── sql/                         # Các script SQL chuẩn hóa & hợp đồng CSDL
+└── README.md                    # Tài liệu hướng dẫn & Báo cáo đồ án
 ```
 
-The `brew trust` command is required by Homebrew 6 and is safe to omit on older
-Homebrew versions that do not provide it. See Microsoft's
-[macOS installation guide](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-sql-server-macos).
+---
 
-Start Docker Desktop and wait until its engine is running before using any
-Docker command below.
+## 5. HƯỚNG DẪN CÀI ĐẶT & CHẠY DỰ ÁN
 
-## 2. First setup on Windows
+### Cách 1: Khởi Tạo Cơ Sở Dữ Liệu trên SQL Server Cục Bộ (SSMS)
 
-Open the project folder in VS Code and use a **PowerShell** terminal:
+1. Mở SQL Server Management Studio (SSMS) và kết nối tới máy chủ SQL Server của bạn (ví dụ: `localhost\SQLEXPRESS`).
+2. Mở và chạy lần lượt 3 file script SQL theo đúng thứ tự:
+   - **File 1:** `QLTV_11_tables (1).sql` -> Tạo database QLTV, 11 bảng chuẩn, Filtered Indexes, View `v_ChiTietPhieuMuon_Phat` và Trigger `trg_DongBoTrangThaiSach`.
+   - **File 2:** `insert_sample_data.sql` -> Nạp dữ liệu danh mục, sách, độc giả và nhân viên mẫu.
+   - **File 3:** `setup_security_roles.sql` -> Tạo Server Logins (`admin`, `nv_mai`, `nv_nam`, `docgia`), tạo Database Users, gán Database Roles (`QUANLY`, `THUTHU`, `DOCGIA`) và Stored Procedure `sp_LayThongTinNhanVien`.
+
+---
+
+### Cách 2: Khởi Tạo Nhanh Cơ Sở Dữ Liệu Bằng Docker (Khuyến nghị cho nhóm)
+
+Dự án cung cấp cấu hình Docker Compose để khởi chạy tự động SQL Server và nạp schema, sample data, smoke test:
 
 ```powershell
+# Tạo cấu hình môi trường
 Copy-Item .env.example .env
-docker compose config --quiet
+
+# Khởi chạy SQL Server container
 docker compose up -d
 
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
-```
-
-If PowerShell blocks virtual-environment activation, allow scripts for only the
-current terminal and activate again:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-The helper files in `docker/*.sh` require Bash. On Windows, run them from Git
-Bash or WSL while Docker Desktop is running.
-
-## 3. First setup on macOS
-
-Open the project folder in VS Code and use a **zsh** terminal:
-
-```bash
-cp .env.example .env
-docker compose config --quiet
-docker compose up -d
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python main.py
-```
-
-SQL Server's Linux container is x86-64. The shared `DOCKER_PLATFORM=linux/amd64`
-setting enables Docker emulation on Apple Silicon; initial startup can therefore
-take longer than on an x86-64 computer.
-
-## 4. Verify the database
-
-Initialization runs automatically after SQL Server becomes healthy:
-
-```bash
-docker compose ps -a
+# Xem log khởi tạo CSDL (chờ cho tới khi thấy DATABASE_CONTRACT_OK)
 docker compose logs database-init
-```
 
-Successful setup means:
-
-- `sqlserver` is `healthy`.
-- `backup-volume-init` and `database-init` show `Exited (0)`.
-- the initialization log contains `DATABASE_CONTRACT_OK` with 11 tables and
-  ends with `Database initialization completed successfully.`
-
-`database-init` is a one-time setup container, so it should stop after success.
-Only `sqlserver` remains running.
-
-Run the transactional behavior checks from Bash:
-
-```bash
+# Chạy kiểm thử smoke test (Bash/WSL)
 ./docker/smoke-test.sh
 ```
 
-The smoke test reads the same `.env` credentials used by Docker Compose and
-rolls back all test records. Success ends with
-`ALL_DATABASE_SMOKE_TESTS_PASSED`.
+---
 
-## 5. Shared configuration
+### Bước Cài Đặt Môi Trường Python & Chạy Ứng Dụng
 
-Copy `.env.example` to `.env`; do not commit `.env`. The checked-in baseline is:
+1. Máy tính cài đặt Python 3.10 trở lên và [Microsoft ODBC Driver 18 for SQL Server](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+2. Tạo môi trường ảo và cài đặt thư viện phụ thuộc:
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   python -m pip install -r requirements.txt
+   ```
+3. Cấu hình chuỗi kết nối trong `db.py`:
+   ```python
+   SERVER_NAME = r"localhost\SQLEXPRESS"  # Nếu dùng local SSMS, hoặc "localhost,1433" nếu dùng Docker
+   DATABASE_NAME = "QLTV"
+   ```
+4. Khởi chạy ứng dụng:
+   ```powershell
+   python login.py
+   ```
 
-```text
-SQL Server image: SQL Server 2022 CU27 on Ubuntu 22.04
-Host/port:        localhost:1433
-Database:         LibraryManagement
-Application user: library_app
-Application pass: LibraryApp_2026!
-Administrator:    sa
-Administrator pass: LibraryAdmin_2026!
-Sample data:      enabled
-Timezone:         Asia/Ho_Chi_Minh
-```
+---
 
-The image is pinned through `MSSQL_IMAGE`; this prevents team members from
-silently receiving different SQL Server builds. Coordinate changes to the
-image, credentials, sample-data setting, and timezone. `MSSQL_PORT` is the host
-port and may be changed locally if port 1433 is already occupied.
+## 6. DANH SÁCH TÀI KHOẢN ĐĂNG NHẬP THỬ NGHIỆM
 
-These credentials are only for local classroom development. Never expose this
-SQL Server port to the internet or reuse the passwords elsewhere. Each team
-member runs an independent local database; Docker does not create a shared
-online server.
+| Tên Đăng Nhập | Mật Khẩu | Vai Trò (Database Role) | Quyền Hạn Nghiệp Vụ |
+| :--- | :--- | :--- | :--- |
+| **admin** | `123456` | **QUANLY** (Ban Quản Lý) | Toàn quyền: Nhập đầu sách mới, thêm sách vào kho, thanh lý sách, mượn trả, quản lý độc giả, xem báo cáo |
+| **nv_mai** | `123456` | **THUTHU** (Tổ Phục Vụ) | Nghiệp vụ phục vụ bạn đọc: Cấp thẻ độc giả, gia hạn thẻ, lập phiếu mượn/trả, báo sách hỏng, xem thống kê |
+| **nv_nam** | `123456` | **THUTHU** (Tổ Phục Vụ) | Nghiệp vụ phục vụ bạn đọc: Cấp thẻ độc giả, gia hạn thẻ, lập phiếu mượn/trả, báo sách hỏng, xem thống kê |
+| **docgia** | `123456` | **DOCGIA** (Sinh Viên) | Dành cho sinh viên tra cứu và tìm kiếm thông tin sách trong thư viện |
 
-Python packages are exactly pinned in `requirements.txt` so each member installs
-the same tested versions. Update those pins only as a coordinated team change.
+---
 
-## 6. Everyday Docker commands
+## 7. QUẢN LÝ DOCKER & BACKUP / RESTORE
 
-Run commands from the Project 02 folder:
-
+### Các lệnh Docker thông dụng:
 ```bash
-# Start or recreate services without deleting stored data
+# Bật dịch vụ
 docker compose up -d
 
-# View all running and completed Project 02 containers
+# Kiểm tra trạng thái
 docker compose ps -a
 
-# Inspect initialization output
-docker compose logs database-init
-
-# Stop and remove containers while keeping database and backup volumes
+# Tắt dịch vụ (giữ nguyên dữ liệu volume)
 docker compose down
 ```
 
-Do not use `docker compose down -v` for routine shutdown. The `-v` option
-permanently removes the local database and every backup stored in its Docker
-backup volume.
-
-After an intentional change to the shared SQL baseline, recreate the local
-development database once so an old volume cannot hide schema drift:
-
+### Sao lưu và phục hồi CSDL (Backup & Restore):
 ```bash
-docker compose down -v
-docker compose up -d
-docker compose logs database-init
-```
-
-## 7. Backup and restore
-
-The maintenance helper operates on `.bak` files in the Docker backup volume:
-
-```bash
-# Create a timestamped backup
+# Tạo bản backup
 ./docker/database-maintenance.sh backup
 
-# Create a named backup
-./docker/database-maintenance.sh backup team-baseline.bak
-
-# List backups
+# Liệt kê các bản backup
 ./docker/database-maintenance.sh list
 
-# Verify a backup without restoring it
-./docker/database-maintenance.sh verify team-baseline.bak
-
-# Restore and replace the current LibraryManagement database
-CONFIRM_RESTORE=LibraryManagement \
-  ./docker/database-maintenance.sh restore team-baseline.bak
+# Phục hồi CSDL
+CONFIRM_RESTORE=LibraryManagement ./docker/database-maintenance.sh restore <file_name>.bak
 ```
 
-Restore disconnects current database users and replaces the database. Backups
-inside the Docker volume are deleted by `docker compose down -v`.
+---
 
-## 8. Teacher-document compatibility
-
-The source document contains internal type contradictions. Project 02 follows
-the detailed data dictionary and applies these consistency decisions:
-
-- Vietnamese descriptive text uses `NVARCHAR` at the documented character
-  length.
-- `ISBN` is `CHAR(10)` in every referencing table.
-- `MASACH` is `VARCHAR(10)` in both `SACH` and `CT_PHIEUMUON`; the document
-  lists 10 and 20 respectively, which would make the foreign key inconsistent.
-- `DOCGIA.DIACHI` is `NVARCHAR(100)` and `DOCGIA.DIENTHOAI` is `VARCHAR(11)`,
-  matching the equivalent employee fields because the document omits them.
-- `ISBN.NHAXB` and `NGANTU.KE` remain descriptive text because the required
-  11-table model defines no publisher or shelf table to reference.
-- `SOCMND` is unique among active cards only, allowing a lost card to receive a
-  new `MADG` while preserving its inactive-card history.
-
-The database enforces active reader cards, at most three unreturned books per
-reader, valid book condition and availability, synchronized loan status, a
-30-day loan period, and a 500 VND daily overdue fine in reporting views. No
-publisher, shelf, fine, or notification table was added.
-
-## 9. Project layout
-
-```text
-main.py                    Application entry point
-dashboard.py               Navigation and screen switching
-database.py                Future shared pyodbc connection placeholder
-requirements.txt           Exact Python dependency versions
-compose.yaml               Reproducible SQL Server services and volumes
-.env.example               Shared local-development configuration template
-
-login/                     Login UI and future actions
-book_management/           Book UI and future actions
-reader_management/         Reader UI and future actions
-borrowing_and_returns/     Loan/return UI and future actions
-reports/                   Report UI and future actions
-backup_and_restore/        Backup/restore UI and future actions
-sql/                       Schema, data, permissions, checks, and maintenance SQL
-docker/                    Initialization, smoke-test, and maintenance helpers
-Additional Info/           Teacher specification and lesson references
-```
-
-Normal initialization runs these scripts in order:
-
-1. `01_create_tables.sql` — 11 tables, constraints, triggers, and report views.
-2. `02_sample_data.sql` — rerunnable shared sample data when
-   `LOAD_SAMPLE_DATA=true`.
-3. `03_login_and_permissions.sql` — application login, database user, and role.
-4. `05_verify_database.sql` — fail-fast schema and permission contract checks.
-
-`99_smoke_test.sql` is run only by `docker/smoke-test.sh`.
-`04_backup_and_restore.sql` is run only by
-`docker/database-maintenance.sh`.
+## 8. QUY TẮC & ĐẶC TẢ CSDL (TEACHER SPECIFICATION)
+- **11 bảng chuẩn hóa**: `THELOAI`, `NGONNGU`, `NGANTU`, `TACGIA`, `DOCGIA`, `NHANVIEN`, `ISBN`, `SACH`, `TACGIA_SACH`, `PHIEUMUON`, `CT_PHIEUMUON`.
+- **Ràng buộc nghiệp vụ**:
+  - `DOCGIA`: `SOCMND` duy nhất với các thẻ đang hoạt động (`HOATDONG = 1`).
+  - `PHIEUMUON`: Mỗi độc giả mượn tối đa 3 cuốn sách chưa trả cùng lúc.
+  - `SACH`: Bản ghi mượn phải thỏa mãn `TINHTRANG = 1` (sách tốt) và `CHOMUON = 0` (chưa ai mượn).
+  - Tự động đồng bộ `CHOMUON` qua Trigger khi thêm/cập nhật `CT_PHIEUMUON`.
+  - Phạt quá hạn 30 ngày: `500 VNĐ / ngày`.

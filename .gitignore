@@ -1,6 +1,19 @@
-.DS_Store
-.env
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
 *.bak
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+
+# IDE & Editor files
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
