@@ -2,7 +2,7 @@ name: library-management-project-02
 
 services:
   backup-volume-init:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     user: root
     entrypoint: ["/bin/bash", "-c"]
@@ -16,7 +16,7 @@ services:
     restart: "no"
 
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       backup-volume-init:
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
 
   database-init:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       sqlserver:

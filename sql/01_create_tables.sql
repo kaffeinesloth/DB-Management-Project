@@ -13,6 +13,11 @@
       equivalent NHANVIEN fields.
     - NHAXB and NGANTU.KE are stored as descriptive text. The document marks
       them as foreign keys but defines no referenced NHAXB or KE table.
+    - A lost card receives a new MADG. SOCMND is therefore unique only among
+      active cards, allowing the same person to keep inactive card history.
+    - The required 30-day loan period and 500 VND daily overdue fine are
+      calculated in reporting views; no extra table is added to the 11-table
+      model because the document defines no fine entity.
 */
 
 IF DB_ID(N'LibraryManagement') IS NULL
@@ -22,6 +27,11 @@ END;
 GO
 
 USE [LibraryManagement];
+GO
+
+/* Required by SQL Server for filtered indexes and persisted object metadata. */
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
 GO
 
 IF OBJECT_ID(N'dbo.THELOAI', N'U') IS NULL
@@ -92,9 +102,35 @@ BEGIN
         HOATDONG      BIT            NOT NULL
             CONSTRAINT DF_DOCGIA_HOATDONG DEFAULT (1),
         CONSTRAINT PK_DOCGIA PRIMARY KEY (MADG),
-        CONSTRAINT UQ_DOCGIA_SOCMND UNIQUE (SOCMND),
         CONSTRAINT CK_DOCGIA_NGAYHETHAN CHECK (NGAYHETHAN >= NGAYLAMTHE)
     );
+END;
+GO
+
+/* Support replacement cards while preventing two active cards for one person. */
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.key_constraints
+    WHERE parent_object_id = OBJECT_ID(N'dbo.DOCGIA')
+      AND name = N'UQ_DOCGIA_SOCMND'
+)
+BEGIN
+    ALTER TABLE dbo.DOCGIA DROP CONSTRAINT UQ_DOCGIA_SOCMND;
+END;
+GO
+
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'dbo.DOCGIA')
+      AND name = N'UX_DOCGIA_SOCMND_ACTIVE'
+)
+BEGIN
+    CREATE UNIQUE INDEX UX_DOCGIA_SOCMND_ACTIVE
+        ON dbo.DOCGIA (SOCMND)
+        WHERE HOATDONG = 1;
 END;
 GO
 
@@ -222,4 +258,242 @@ BEGIN
         )
     );
 END;
+GO
+
+/*
+    Enforce the borrowing rules stated in the teacher's document:
+    - the reader card is active and valid on the borrowing date;
+    - a reader holds no more than three unreturned books;
+    - a damaged/unusable book cannot be borrowed;
+    - one physical book cannot have two active loans;
+    - a return cannot predate its loan.
+
+    Locks on the reader and physical-book rows serialize concurrent borrowing
+    attempts for the same reader or copy.
+*/
+CREATE OR ALTER TRIGGER dbo.trg_CT_PHIEUMUON_ValidateAndSync
+ON dbo.CT_PHIEUMUON
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @LockedRows INT;
+
+    SELECT @LockedRows = COUNT(*)
+    FROM dbo.DOCGIA AS reader WITH (UPDLOCK, HOLDLOCK)
+    WHERE reader.MADG IN
+    (
+        SELECT loan.MADG
+        FROM inserted AS detail
+        INNER JOIN dbo.PHIEUMUON AS loan ON loan.MAPHIEU = detail.MAPHIEU
+    );
+
+    SELECT @LockedRows = COUNT(*)
+    FROM dbo.SACH AS book WITH (UPDLOCK, HOLDLOCK)
+    WHERE book.MASACH IN
+    (
+        SELECT MASACH FROM inserted
+        UNION
+        SELECT MASACH FROM deleted
+    );
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM inserted AS detail
+        INNER JOIN dbo.PHIEUMUON AS loan ON loan.MAPHIEU = detail.MAPHIEU
+        INNER JOIN dbo.DOCGIA AS reader ON reader.MADG = loan.MADG
+        WHERE detail.TRA = 0
+          AND
+          (
+              reader.HOATDONG = 0
+              OR reader.NGAYHETHAN < loan.NGAYMUON
+              OR reader.NGAYLAMTHE > loan.NGAYMUON
+          )
+    )
+    BEGIN
+        ;THROW 50010, 'Reader card must be active and valid on the borrowing date.', 1;
+    END;
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM inserted AS detail
+        INNER JOIN dbo.SACH AS book ON book.MASACH = detail.MASACH
+        WHERE detail.TRA = 0 AND book.TINHTRANG = 0
+    )
+    BEGIN
+        ;THROW 50011, 'A damaged or unusable book cannot be borrowed.', 1;
+    END;
+
+    IF EXISTS
+    (
+        SELECT detail.MASACH
+        FROM dbo.CT_PHIEUMUON AS detail
+        WHERE detail.TRA = 0
+          AND detail.MASACH IN (SELECT MASACH FROM inserted)
+        GROUP BY detail.MASACH
+        HAVING COUNT(*) > 1
+    )
+    BEGIN
+        ;THROW 50012, 'A physical book is already on loan.', 1;
+    END;
+
+    IF EXISTS
+    (
+        SELECT active_loan.MADG
+        FROM
+        (
+            SELECT loan.MADG, COUNT(*) AS ActiveBookCount
+            FROM dbo.PHIEUMUON AS loan
+            INNER JOIN dbo.CT_PHIEUMUON AS detail
+                ON detail.MAPHIEU = loan.MAPHIEU
+            WHERE detail.TRA = 0
+              AND loan.MADG IN
+              (
+                  SELECT inserted_loan.MADG
+                  FROM inserted AS inserted_detail
+                  INNER JOIN dbo.PHIEUMUON AS inserted_loan
+                      ON inserted_loan.MAPHIEU = inserted_detail.MAPHIEU
+              )
+            GROUP BY loan.MADG
+        ) AS active_loan
+        WHERE active_loan.ActiveBookCount > 3
+    )
+    BEGIN
+        ;THROW 50013, 'A reader may hold at most three unreturned books.', 1;
+    END;
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM inserted AS detail
+        INNER JOIN dbo.PHIEUMUON AS loan ON loan.MAPHIEU = detail.MAPHIEU
+        WHERE detail.TRA = 1 AND detail.NGAYTRA < loan.NGAYMUON
+    )
+    BEGIN
+        ;THROW 50014, 'The return date cannot be earlier than the borrowing date.', 1;
+    END;
+
+    ;WITH AffectedBooks AS
+    (
+        SELECT MASACH FROM inserted
+        UNION
+        SELECT MASACH FROM deleted
+    )
+    UPDATE book
+    SET CHOMUON = CASE
+        WHEN EXISTS
+        (
+            SELECT 1
+            FROM dbo.CT_PHIEUMUON AS detail
+            WHERE detail.MASACH = book.MASACH AND detail.TRA = 0
+        ) THEN 1 ELSE 0 END
+    FROM dbo.SACH AS book
+    INNER JOIN AffectedBooks AS affected ON affected.MASACH = book.MASACH;
+END;
+GO
+
+/* Prevent direct edits from making SACH.CHOMUON disagree with loan details. */
+CREATE OR ALTER TRIGGER dbo.trg_SACH_EnforceLoanState
+ON dbo.SACH
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS
+    (
+        SELECT 1
+        FROM inserted AS book
+        WHERE book.CHOMUON <>
+            CASE WHEN EXISTS
+            (
+                SELECT 1
+                FROM dbo.CT_PHIEUMUON AS detail
+                WHERE detail.MASACH = book.MASACH AND detail.TRA = 0
+            ) THEN 1 ELSE 0 END
+    )
+    BEGIN
+        ;THROW 50015, 'SACH.CHOMUON must match the active loan details.', 1;
+    END;
+END;
+GO
+
+/* 30-day due date and 500 VND per overdue day, as stated in the document. */
+CREATE OR ALTER VIEW dbo.v_CHITIET_MUONTRA
+AS
+SELECT
+    loan.MAPHIEU,
+    loan.MADG,
+    reader.HODG,
+    reader.TENDG,
+    detail.MASACH,
+    book.ISBN,
+    title.TENSACH,
+    loan.HINHTHUC,
+    loan.NGAYMUON,
+    DATEADD(DAY, 30, loan.NGAYMUON) AS NGAYHENTRA,
+    detail.NGAYTRA,
+    detail.TINHTRANGMUON,
+    detail.TRA,
+    loan.MANV AS MANV_CHOMUON,
+    detail.MANVNS AS MANV_NHANSACH,
+    CASE
+        WHEN DATEDIFF
+        (
+            DAY,
+            DATEADD(DAY, 30, loan.NGAYMUON),
+            COALESCE(detail.NGAYTRA, GETDATE())
+        ) > 0
+        THEN DATEDIFF
+        (
+            DAY,
+            DATEADD(DAY, 30, loan.NGAYMUON),
+            COALESCE(detail.NGAYTRA, GETDATE())
+        )
+        ELSE 0
+    END AS SONGAYQUAHAN,
+    CONVERT(BIGINT, 500) *
+    CASE
+        WHEN DATEDIFF
+        (
+            DAY,
+            DATEADD(DAY, 30, loan.NGAYMUON),
+            COALESCE(detail.NGAYTRA, GETDATE())
+        ) > 0
+        THEN DATEDIFF
+        (
+            DAY,
+            DATEADD(DAY, 30, loan.NGAYMUON),
+            COALESCE(detail.NGAYTRA, GETDATE())
+        )
+        ELSE 0
+    END AS TIENPHATQUAHAN
+FROM dbo.PHIEUMUON AS loan
+INNER JOIN dbo.DOCGIA AS reader ON reader.MADG = loan.MADG
+INNER JOIN dbo.CT_PHIEUMUON AS detail ON detail.MAPHIEU = loan.MAPHIEU
+INNER JOIN dbo.SACH AS book ON book.MASACH = detail.MASACH
+INNER JOIN dbo.ISBN AS title ON title.ISBN = book.ISBN;
+GO
+
+CREATE OR ALTER VIEW dbo.v_DOCGIA_MUON_QUAHAN
+AS
+SELECT *
+FROM dbo.v_CHITIET_MUONTRA
+WHERE TRA = 0 AND SONGAYQUAHAN > 0;
+GO
+
+CREATE OR ALTER VIEW dbo.v_TANSUAT_SU_DUNG_SACH
+AS
+SELECT
+    title.ISBN,
+    title.TENSACH,
+    COUNT(detail.MASACH) AS SOLANMUON
+FROM dbo.ISBN AS title
+LEFT JOIN dbo.SACH AS book ON book.ISBN = title.ISBN
+LEFT JOIN dbo.CT_PHIEUMUON AS detail ON detail.MASACH = book.MASACH
+GROUP BY title.ISBN, title.TENSACH;
 GO
