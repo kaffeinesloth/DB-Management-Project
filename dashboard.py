@@ -222,7 +222,13 @@ class MainDashboard(ctk.CTk):
         if confirm:
             if self.on_logout:
                 self.on_logout()
+            self.after(30, self._safe_destroy)
+
+    def _safe_destroy(self):
+        try:
             self.destroy()
+        except Exception:
+            pass
 
 
 # Bí danh tương thích
