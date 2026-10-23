@@ -24,32 +24,48 @@ class BookActions:
 
     @staticmethod
     def get_danh_sach_sach(keyword: str = "") -> List[Dict[str, Any]]:
-        """Lấy danh sách các cuốn sách vật lý (SACH) kèm thông tin chi tiết đầu sách (ISBN)."""
+        """Lấy danh sách các cuốn sách vật lý (SACH) kèm thông tin chi tiết đầu sách (ISBN), tác giả và thể loại."""
         pattern = f"%{keyword.strip()}%"
         query = """
             SELECT 
                 s.MASACH,
-                i.ISBN,
+                s.ISBN,
                 i.TENSACH,
-                ISNULL(tl.THELOAI, N'Chưa phân loại') AS TheLoai,
-                ISNULL(i.GIA, 0) AS GiaBia,
+                ISNULL(tl.THELOAI, N'Chưa phân loại') AS THELOAI,
+                ISNULL((
+                    SELECT STRING_AGG(tg.HOTENTG, ', ') 
+                    FROM dbo.TACGIA_SACH tgs 
+                    JOIN dbo.TACGIA tg ON tgs.MATACGIA = tg.MATACGIA 
+                    WHERE tgs.ISBN = s.ISBN
+                ), N'Chưa rõ') AS HOTENTG,
                 s.TINHTRANG,
                 s.CHOMUON,
-                ISNULL(nt.KE + ' - ' + nt.MOTA, N'Chưa xếp') AS ViTri
+                ISNULL(nt.KE + ' - ' + nt.MOTA, N'Chưa xếp') AS ViTri,
+                ISNULL(i.GIA, 0) AS GiaBia
             FROM dbo.SACH s
             INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN
             LEFT JOIN dbo.THELOAI tl ON i.MATL = tl.MATL
             LEFT JOIN dbo.NGANTU nt ON s.MANGANTU = nt.MANGANTU
             WHERE s.MASACH LIKE ? 
                OR i.TENSACH LIKE ? 
-               OR i.ISBN LIKE ?
+               OR s.ISBN LIKE ?
+               OR tl.THELOAI LIKE ?
+               OR EXISTS (
+                   SELECT 1 FROM dbo.TACGIA_SACH tgs2 
+                   JOIN dbo.TACGIA tg2 ON tgs2.MATACGIA = tg2.MATACGIA 
+                   WHERE tgs2.ISBN = s.ISBN AND tg2.HOTENTG LIKE ?
+               )
             ORDER BY s.MASACH ASC;
         """
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, (pattern, pattern, pattern))
+            cursor.execute(query, (pattern, pattern, pattern, pattern, pattern))
             cols = [col[0] for col in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+            records = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            for r in records:
+                r["TheLoai"] = r["THELOAI"]
+                r["HoTenTG"] = r["HOTENTG"]
+            return records
 
     @staticmethod
     def get_danh_sach_isbn(keyword: str = "") -> List[Dict[str, Any]]:

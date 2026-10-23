@@ -461,12 +461,15 @@ class BookScreen(ctk.CTkFrame):
 
             gia_str = f"{r.get('GiaBia', 0):,}"
 
+            theloai_val = r.get("THELOAI") or r.get("TheLoai") or "Chưa phân loại"
+            hotentg_val = r.get("HOTENTG") or r.get("HoTenTG") or "Chưa rõ"
+
             self.tree.insert("", "end", values=(
                 r.get("MASACH"),
                 r.get("ISBN"),
                 r.get("TENSACH"),
-                r.get("THELOAI"),
-                r.get("HOTENTG"),
+                theloai_val,
+                hotentg_val,
                 r.get("ViTri"),
                 gia_str,
                 tinhtrang_str,
