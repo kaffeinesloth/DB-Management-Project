@@ -1,50 +1,49 @@
-"""Application entry point with integrated login session and dashboard navigation."""
+"""Application entry point inheriting 100% lifecycle from feature/qltv:login.py."""
 
 import customtkinter as ctk
-import ctk_patch  # Kích hoạt bản vá placeholder cho CustomTkinter
-from login.login_screen import LoginScreen
-from dashboard import Dashboard
-from database import CURRENT_SESSION
+import ctk_patch
+from login.login_screen import LoginForm
+from dashboard import MainDashboard
+
+# Cấu hình giao diện Dark Mode chuẩn đồ án
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
 
 
-class LibraryApplication(ctk.CTk):
-    """Cửa sổ ứng dụng chính Quản Lý Thư Viện."""
+def start_application() -> None:
+    """
+    Vòng đời ứng dụng Quản Lý Thư Viện:
+    1. Khởi chạy cửa sổ đăng nhập riêng biệt LoginForm (420x560).
+    2. Xác thực thành công -> Mở cửa sổ Dashboard chính (1260x740) với phân quyền người dùng.
+    3. Khi đăng xuất -> Quay trở lại cửa sổ đăng nhập.
+    4. Khi tắt cửa sổ -> Thoát hoàn toàn ứng dụng.
+    """
+    while True:
+        # Bước 1: Mở màn hình đăng nhập
+        login_app = LoginForm()
+        login_app.mainloop()
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.title("Hệ Thống Quản Lý Thư Viện (Library Management System)")
-        self.geometry("1200x740")
-        self.minsize(980, 620)
+        # Nếu người dùng tắt cửa sổ đăng nhập mà không đăng nhập -> Thoát hẳn
+        if not getattr(login_app, "logged_in_user", None):
+            break
 
-        self._active_frame = None
-        self._show_login_screen()
+        # Bước 2: Đăng nhập thành công -> Mở màn hình Dashboard
+        current_user = login_app.logged_in_user
+        logout_holder = {"logged_out": False}
 
-    def _show_login_screen(self) -> None:
-        """Hiển thị màn hình Đăng nhập."""
-        if self._active_frame:
-            self._active_frame.destroy()
+        def on_logout():
+            logout_holder["logged_out"] = True
 
-        self._active_frame = LoginScreen(self, on_login=self._on_login_success)
-        self._active_frame.pack(fill="both", expand=True)
+        dashboard = MainDashboard(current_user, on_logout=on_logout)
+        dashboard.mainloop()
 
-    def _on_login_success(self, username: str, password: str) -> None:
-        """Xử lý sau khi người dùng xác thực tài khoản thành công."""
-        if self._active_frame:
-            self._active_frame.destroy()
+        # Nếu người dùng đóng Dashboard bằng nút X (không phải bấm Đăng xuất) -> Thoát hẳn
+        if not logout_holder["logged_out"]:
+            break
 
-        self._active_frame = Dashboard(self, on_logout=self._on_logout)
-        self._active_frame.pack(fill="both", expand=True)
 
-    def _on_logout(self) -> None:
-        """Đăng xuất phiên làm việc hiện tại và quay về màn hình đăng nhập."""
-        CURRENT_SESSION["login_name"] = ""
-        CURRENT_SESSION["password"] = ""
-        CURRENT_SESSION["user_info"] = None
-        self._show_login_screen()
-
+# Bí danh tương thích
+LibraryApplication = MainDashboard
 
 if __name__ == "__main__":
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
-    app = LibraryApplication()
-    app.mainloop()
+    start_application()

@@ -1,146 +1,229 @@
-"""Main navigation dashboard with role-based access control (RBAC)."""
+"""Main navigation dashboard inheriting 100% of feature/qltv:ui/main_dashboard.py layout and RBAC."""
 
+import tkinter as tk
+from tkinter import messagebox
 import customtkinter as ctk
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional
 
-from backup_and_restore.backup_screen import BackupScreen
 from book_management.book_screen import BookScreen
-from borrowing_and_returns.borrowing_screen import BorrowingScreen
 from reader_management.reader_screen import ReaderScreen
+from borrowing_and_returns.borrowing_screen import BorrowingScreen
 from reports.report_screen import ReportScreen
+from backup_and_restore.backup_screen import BackupScreen
 from database import CURRENT_SESSION
 
 
-class Dashboard(ctk.CTkFrame):
-    """Bảng điều khiển trung tâm (Dashboard) điều hướng các module nghiệp vụ."""
+class MainDashboard(ctk.CTk):
+    """
+    Cửa sổ chính Hệ Thống Quản Lý Thư Viện:
+    - Kế thừa trọn vẹn 100% giao diện, phân quyền và trải nghiệm từ feature/qltv.
+    - Thanh điều hướng (Sidebar) tích hợp định danh nhân viên và nhóm quyền (RBAC).
+    - Phân quyền động:
+        + Độc giả (DOCGIA): Chỉ mở Tab Tra cứu sách.
+        + Thủ thư (THUTHU): Tab Sách, Độc giả, Mượn/Trả, Báo cáo thống kê.
+        + Quản lý (QUANLY): Toàn quyền thêm mới/thanh lý sách và Sao lưu & Phục hồi CSDL.
+    """
 
-    def __init__(self, master, on_logout: Optional[Callable[[], None]] = None) -> None:
-        super().__init__(master, fg_color="transparent")
-        self._on_logout = on_logout
-        self.user_info: Dict[str, Any] = CURRENT_SESSION.get("user_info") or {}
+    def __init__(self, current_user: Optional[Dict[str, Any]] = None, on_logout=None):
+        super().__init__()
+        self.current_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        self.on_logout = on_logout
 
-        # 1. Sidebar điều hướng bên trái
-        navigation = ctk.CTkFrame(self, width=240, corner_radius=0, fg_color=("#F3F4F6", "#1E2229"))
-        navigation.pack(side="left", fill="y", padx=0, pady=0)
-        navigation.pack_propagate(False)
+        # Thiết lập cửa sổ
+        hoten = self.current_user.get("HoTen", "Nhân viên")
+        vaitro = self.current_user.get("VaiTro", "Thủ thư")
+        self.title(f"Hệ Thống Quản Lý Thư Viện (QLTV) - {hoten} [{vaitro}]")
+        self.geometry("1260x740")
+        self.minsize(1100, 660)
 
-        # 2. Vùng hiển thị màn hình chức năng bên phải
-        self._content = ctk.CTkFrame(self, fg_color="transparent")
-        self._content.pack(side="right", fill="both", expand=True, padx=(10, 15), pady=10)
+        # Căn giữa màn hình
+        self.center_window()
 
-        # 3. Logo & Tiêu đề ứng dụng
-        header_box = ctk.CTkFrame(navigation, fg_color="transparent")
-        header_box.pack(fill="x", padx=15, pady=(25, 15))
+        # Layout chính: Cột 0 (Sidebar điều hướng), Cột 1 (Khu vực nội dung Tab)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        ctk.CTkLabel(
-            header_box,
-            text="QL THƯ VIỆN",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color=("#1F2937", "#60A5FA")
-        ).pack(anchor="w")
+        self.create_sidebar()
+        self.create_content_area()
 
-        ctk.CTkLabel(
-            header_box,
-            text="Hệ Thống Quản Trị CSDL",
-            font=ctk.CTkFont(size=11),
-            text_color="gray60"
-        ).pack(anchor="w")
+        # Mặc định mở Tab Sách
+        self.select_tab("sach")
 
-        # 4. Huy hiệu người dùng (User Profile Badge)
-        user_card = ctk.CTkFrame(navigation, corner_radius=10, fg_color=("#E5E7EB", "#2A2F3D"))
-        user_card.pack(fill="x", padx=12, pady=(0, 20))
+    def center_window(self):
+        self.update_idletasks()
+        width = 1260
+        height = 740
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
-        hoten = self.user_info.get("HoTen") or self.user_info.get("LoginName") or "Người dùng"
-        vaitro = self.user_info.get("VaiTro") or "Quản trị"
-        role_key = (self.user_info.get("RoleName") or "QUANLY").upper()
+    def create_sidebar(self):
+        self.sidebar = ctk.CTkFrame(self, width=240, corner_radius=0)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_rowconfigure(9, weight=1)
 
-        ctk.CTkLabel(
-            user_card,
-            text=hoten,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            anchor="w"
-        ).pack(fill="x", padx=10, pady=(8, 2))
-
-        role_badge = ctk.CTkLabel(
-            user_card,
-            text=f"• {vaitro}",
-            font=ctk.CTkFont(size=11),
-            text_color="#10B981" if "QUANLY" in role_key else "#3B82F6",
-            anchor="w"
+        # Logo / Tên hệ thống
+        lbl_brand = ctk.CTkLabel(
+            self.sidebar, 
+            text="THƯ VIỆN QLTV", 
+            font=ctk.CTkFont(size=20, weight="bold")
         )
-        role_badge.pack(fill="x", padx=10, pady=(0, 8))
+        lbl_brand.grid(row=0, column=0, padx=20, pady=(25, 5))
 
-        # 5. Danh sách các module theo phân quyền (RBAC)
-        self.nav_buttons: Dict[str, ctk.CTkButton] = {}
+        lbl_sub = ctk.CTkLabel(
+            self.sidebar, 
+            text="Hệ Thống Quản Trị CSDL", 
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        lbl_sub.grid(row=1, column=0, padx=20, pady=(0, 20))
 
-        all_modules = [
-            ("📚 Quản Lý Sách", BookScreen, ["QUANLY", "THUTHU", "DOCGIA"]),
-            ("👥 Quản Lý Độc Giả", ReaderScreen, ["QUANLY", "THUTHU"]),
-            ("🔄 Mượn & Trả Sách", BorrowingScreen, ["QUANLY", "THUTHU"]),
-            ("📊 Báo Cáo Thống Kê", ReportScreen, ["QUANLY", "THUTHU"]),
-            ("💾 Sao Lưu & Phục Hồi", BackupScreen, ["QUANLY"])
-        ]
+        # Khung thông tin nhân viên & Định danh hệ thống
+        profile_frame = ctk.CTkFrame(self.sidebar, fg_color=("#E2E8F0", "#1F2937"), corner_radius=10)
+        profile_frame.grid(row=2, column=0, padx=15, pady=(0, 18), sticky="ew")
 
-        allowed_modules = []
-        for label, screen_class, roles in all_modules:
-            if any(r in role_key for r in roles) or "SA" in role_key or "ADMIN" in role_key:
-                allowed_modules.append((label, screen_class))
+        lbl_name = ctk.CTkLabel(
+            profile_frame, 
+            text=f"{self.current_user.get('HoTen', 'N/A')}", 
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        lbl_name.pack(anchor="w", padx=12, pady=(10, 2))
 
-        for label, screen_class in allowed_modules:
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+
+        if not is_docgia:
+            lbl_manv = ctk.CTkLabel(
+                profile_frame, 
+                text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}", 
+                font=ctk.CTkFont(size=12),
+                text_color="#9CA3AF"
+            )
+        else:
+            lbl_manv = ctk.CTkLabel(
+                profile_frame, 
+                text="Đối tượng: Bạn đọc", 
+                font=ctk.CTkFont(size=12),
+                text_color="#9CA3AF"
+            )
+        lbl_manv.pack(anchor="w", padx=12, pady=(0, 2))
+
+        lbl_login = ctk.CTkLabel(
+            profile_frame, 
+            text=f"Login: {self.current_user.get('LoginName', 'N/A')}", 
+            font=ctk.CTkFont(size=11),
+            text_color="#9CA3AF"
+        )
+        lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
+
+        role_name = (self.current_user.get('RoleName') or 'QUANLY').upper()
+        role_color = "#10B981" if "QUANLY" in role_name else ("#A855F7" if is_docgia else "#60A5FA")
+        lbl_role = ctk.CTkLabel(
+            profile_frame, 
+            text=f"Quyền: {self.current_user.get('RoleName', 'QUANLY')}", 
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=role_color
+        )
+        lbl_role.pack(anchor="w", padx=12, pady=(0, 10))
+
+        # Các nút chuyển Tab điều hướng theo phân quyền
+        self.nav_buttons = {}
+
+        if is_docgia:
+            tabs = [
+                ("sach", "Tra Cứu Sách")
+            ]
+        elif "THUTHU" in role_name:
+            tabs = [
+                ("sach", "Quản Lý Sách"),
+                ("docgia", "Quản Lý Độc Giả"),
+                ("muontra", "Mượn / Trả Sách"),
+                ("thongke", "Báo Cáo Thống Kê")
+            ]
+        else:  # QUANLY hoặc ADMIN
+            tabs = [
+                ("sach", "Quản Lý Sách"),
+                ("docgia", "Quản Lý Độc Giả"),
+                ("muontra", "Mượn / Trả Sách"),
+                ("thongke", "Báo Cáo Thống Kê"),
+                ("backup", "Sao Lưu & Phục Hồi")
+            ]
+
+        for idx, (tab_id, tab_title) in enumerate(tabs, start=3):
             btn = ctk.CTkButton(
-                navigation,
-                text=label,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                anchor="w",
+                self.sidebar,
+                text=tab_title,
                 height=42,
+                anchor="w",
+                font=ctk.CTkFont(size=13, weight="bold"),
                 fg_color="transparent",
-                text_color=("#1F2937", "#E5E7EB"),
-                hover_color=("#E5E7EB", "#374151"),
-                command=lambda sc=screen_class, lbl=label: self._on_module_click(sc, lbl)
+                text_color=("gray10", "gray90"),
+                hover_color=("#CBD5E1", "#374151"),
+                command=lambda tid=tab_id: self.select_tab(tid)
             )
-            btn.pack(fill="x", padx=12, pady=4)
-            self.nav_buttons[label] = btn
+            btn.grid(row=idx, column=0, padx=15, pady=4, sticky="ew")
+            self.nav_buttons[tab_id] = btn
 
-        # Spacer
-        ctk.CTkFrame(navigation, fg_color="transparent").pack(fill="both", expand=True)
+        # Nút Đăng Xuất ở góc dưới
+        btn_logout = ctk.CTkButton(
+            self.sidebar,
+            text="Đăng Xuất",
+            height=38,
+            fg_color="#EF4444",
+            hover_color="#DC2626",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.handle_logout
+        )
+        btn_logout.grid(row=10, column=0, padx=15, pady=(10, 20), sticky="ew")
 
-        # 6. Nút Đăng xuất ở cuối sidebar
-        if self._on_logout:
-            btn_logout = ctk.CTkButton(
-                navigation,
-                text="🚪 Đăng Xuất",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                height=36,
-                fg_color=("#FEE2E2", "#450A0A"),
-                text_color=("#DC2626", "#FCA5A5"),
-                hover_color=("#FECACA", "#7F1D1D"),
-                command=self._on_logout
-            )
-            btn_logout.pack(fill="x", padx=12, pady=(10, 16))
+    def create_content_area(self):
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self.main_container.grid_rowconfigure(0, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
 
-        # Khởi tạo màn hình mặc định ban đầu
-        default_screen = allowed_modules[0][1] if allowed_modules else BookScreen
-        default_label = allowed_modules[0][0] if allowed_modules else "📚 Quản Lý Sách"
-        self._on_module_click(default_screen, default_label)
+        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
+        role_name = (self.current_user.get("RoleName") or "QUANLY").upper()
 
-    def _on_module_click(self, screen_class, label: str) -> None:
-        # Cập nhật style nút đang chọn
-        for l, b in self.nav_buttons.items():
-            if l == label:
-                b.configure(fg_color=("#2563EB", "#1D4ED8"), text_color="#FFFFFF")
+        if is_docgia:
+            self.views = {
+                "sach": BookScreen(self.main_container, self.current_user)
+            }
+        elif "THUTHU" in role_name:
+            self.views = {
+                "sach": BookScreen(self.main_container, self.current_user),
+                "docgia": ReaderScreen(self.main_container, self.current_user),
+                "muontra": BorrowingScreen(self.main_container, self.current_user),
+                "thongke": ReportScreen(self.main_container, self.current_user),
+            }
+        else:
+            self.views = {
+                "sach": BookScreen(self.main_container, self.current_user),
+                "docgia": ReaderScreen(self.main_container, self.current_user),
+                "muontra": BorrowingScreen(self.main_container, self.current_user),
+                "thongke": ReportScreen(self.main_container, self.current_user),
+                "backup": BackupScreen(self.main_container, self.current_user),
+            }
+
+    def select_tab(self, tab_id: str):
+        for view in self.views.values():
+            view.grid_forget()
+
+        for tid, btn in self.nav_buttons.items():
+            if tid == tab_id:
+                btn.configure(fg_color=("#3B82F6", "#2563EB"), text_color="white")
             else:
-                b.configure(fg_color="transparent", text_color=("#1F2937", "#E5E7EB"))
+                btn.configure(fg_color="transparent", text_color=("gray10", "gray90"))
 
-        self.show_screen(screen_class)
+        if tab_id in self.views:
+            self.views[tab_id].grid(row=0, column=0, sticky="nsew")
 
-    def show_screen(self, screen_class) -> None:
-        """Chuyển đổi giao diện vùng nội dung chính."""
-        for widget in self._content.winfo_children():
-            widget.destroy()
+    def handle_logout(self):
+        confirm = messagebox.askyesno("Đăng xuất", "Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")
+        if confirm:
+            if self.on_logout:
+                self.on_logout()
+            self.destroy()
 
-        try:
-            screen = screen_class(self._content, current_user=self.user_info)
-        except TypeError:
-            screen = screen_class(self._content)
 
-        screen.pack(fill="both", expand=True)
+# Bí danh tương thích
+Dashboard = MainDashboard
