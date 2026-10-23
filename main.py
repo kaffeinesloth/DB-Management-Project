@@ -25,10 +25,19 @@ def start_application() -> None:
 
         # Nếu người dùng tắt cửa sổ đăng nhập mà không đăng nhập -> Thoát hẳn
         if not getattr(login_app, "logged_in_user", None):
+            try:
+                login_app.destroy()
+            except Exception:
+                pass
             break
 
-        # Bước 2: Đăng nhập thành công -> Mở màn hình Dashboard
+        # Bước 2: Đăng nhập thành công -> Hủy cửa sổ đăng nhập và Mở Dashboard
         current_user = login_app.logged_in_user
+        try:
+            login_app.destroy()
+        except Exception:
+            pass
+
         logout_holder = {"logged_out": False}
 
         def on_logout():
@@ -36,6 +45,11 @@ def start_application() -> None:
 
         dashboard = MainDashboard(current_user, on_logout=on_logout)
         dashboard.mainloop()
+
+        try:
+            dashboard.destroy()
+        except Exception:
+            pass
 
         # Nếu người dùng đóng Dashboard bằng nút X (không phải bấm Đăng xuất) -> Thoát hẳn
         if not logout_holder["logged_out"]:

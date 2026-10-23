@@ -142,8 +142,9 @@ class LoginForm(ctk.CTk):
                 if self.on_login_success:
                     self.on_login_success(user)
                 success = True
-                # Đóng cửa sổ login sau khi animation của nút bấm hoàn tất để tránh TclError
-                self.after(30, self._safe_destroy)
+                # Ẩn cửa sổ đăng nhập ngay lập tức và thoát mainloop sạch sẽ
+                self.withdraw()
+                self.quit()
         except ValueError as val_err:
             messagebox.showerror("Thất bại", str(val_err))
             self.txt_password.delete(0, "end")
@@ -155,12 +156,6 @@ class LoginForm(ctk.CTk):
                     self.btn_login.configure(state="normal", text="Đăng Nhập")
                 except Exception:
                     pass
-
-    def _safe_destroy(self):
-        try:
-            self.destroy()
-        except Exception:
-            pass
 
 
 # Bí danh tương thích
