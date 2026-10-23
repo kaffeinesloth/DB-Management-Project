@@ -1,5 +1,6 @@
 /* ============================================================
-   SCRIPT THIẾT LẬP BẢO MẬT & PHÂN QUYỀN CHUẨN SQL SERVER (QLTV)
+   SCRIPT THIẾT LẬP BẢO MẬT & PHÂN QUYỀN CHUẨN SQL SERVER
+   Hỗ trợ cả Database LibraryManagement (Docker) và QLTV (Local).
    Chuẩn hóa theo đúng góp ý của Giảng viên:
    - 1. Tạo 3 Database Roles: QUANLY, THUTHU và DOCGIA.
    - 2. Phân quyền chi tiết (Least Privilege):
@@ -11,12 +12,20 @@
         + Login nv_nam -> Database User [1] (MANV = 1) -> Role THUTHU
         + Login nv_mai -> Database User [2] (MANV = 2) -> Role THUTHU
         + Login admin  -> Database User [3] (MANV = 3) -> Role QUANLY
-        + Login docgia -> Database User [docgia]       -> Role DOCGIA
+        + Login docgia -> Database User [4]            -> Role DOCGIA
    - 5. Stored Procedure nhận tham số @LoginName, tra cứu động qua SID,
         tự động đọc Mã NV từ Database User name mà không hardcode IF...ELSE.
    ============================================================ */
 
-USE QLTV;
+IF DB_ID(N'LibraryManagement') IS NOT NULL
+    USE [LibraryManagement];
+ELSE IF DB_ID(N'QLTV') IS NOT NULL
+    USE [QLTV];
+ELSE
+BEGIN
+    RAISERROR(N'Không tìm thấy Database LibraryManagement hoặc QLTV!', 16, 1);
+    RETURN;
+END;
 GO
 
 SET ANSI_NULLS ON;
@@ -24,7 +33,7 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 -- ============================================================
--- 1. TẠO CÁC DATABASE ROLES TRONG DATABASE QLTV
+-- 1. TẠO CÁC DATABASE ROLES TRONG DATABASE
 -- ============================================================
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'QUANLY' AND type = 'R')
 BEGIN
@@ -126,10 +135,13 @@ END;
 GO
 
 -- ============================================================
--- 4. ÁNH XẠ LOGINS SANG DATABASE USERS TRONG QLTV & GÁN ROLE
--- Quy chuẩn: Database User name = Mã nhân viên (dạng số nguyên 1, 2, 3)
+-- 4. ÁNH XẠ LOGINS SANG DATABASE USERS & GÁN ROLE
+-- Quy chuẩn: Database User name = Mã nhân viên (dạng số nguyên 1, 2, 3, 4)
 -- ============================================================
-USE QLTV;
+IF DB_ID(N'LibraryManagement') IS NOT NULL
+    USE [LibraryManagement];
+ELSE IF DB_ID(N'QLTV') IS NOT NULL
+    USE [QLTV];
 GO
 
 -- Dọn dẹp tên user cũ dạng chữ (nếu từng tạo trước đây) để tránh xung đột mapping SID
@@ -139,6 +151,11 @@ IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'nv_mai' AND type 
     DROP USER [nv_mai];
 IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'nv_nam' AND type = 'S')
     DROP USER [nv_nam];
+IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'user_docgia' AND type = 'S')
+BEGIN
+    ALTER ROLE [DOCGIA] DROP MEMBER [user_docgia];
+    DROP USER [user_docgia];
+END;
 GO
 
 -- 4.1. Map User [1] cho Login [nv_nam] -> MANV = 1 (Thủ thư)
@@ -165,12 +182,12 @@ END;
 ALTER ROLE [QUANLY] ADD MEMBER [3];
 GO
 
--- 4.4. Map User [user_docgia] cho Login [docgia] -> Độc giả tra cứu (tránh trùng tên với Role DOCGIA)
-IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'user_docgia' AND type = 'S')
+-- 4.4. Map User [4] cho Login [docgia] -> Độc giả tra cứu (User 4)
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '4' AND type = 'S')
 BEGIN
-    CREATE USER [user_docgia] FOR LOGIN [docgia];
+    CREATE USER [4] FOR LOGIN [docgia];
 END;
-ALTER ROLE [DOCGIA] ADD MEMBER [user_docgia];
+ALTER ROLE [DOCGIA] ADD MEMBER [4];
 GO
 
 -- ============================================================
@@ -201,7 +218,7 @@ BEGIN
         WHERE name = @LoginName;
     END;
 
-    -- 2. Tìm Role của User trong Database QLTV (Ưu tiên QUANLY > THUTHU > DOCGIA)
+    -- 2. Tìm Role của User trong Database (Ưu tiên QUANLY > THUTHU > DOCGIA)
     SELECT TOP 1 @RoleName = r.name
     FROM sys.database_role_members rm
     INNER JOIN sys.database_principals r ON rm.role_principal_id = r.principal_id
@@ -214,11 +231,11 @@ BEGIN
         ELSE 4 END;
 
     -- 3. Trường hợp ĐỘC GIẢ (Sinh viên tra cứu sách)
-    IF @RoleName = 'DOCGIA' OR @LoginName = 'docgia' OR @DBUserName = 'user_docgia'
+    IF @RoleName = 'DOCGIA' OR @LoginName = 'docgia' OR @DBUserName = 'user_docgia' OR @DBUserName = '4'
     BEGIN
         SELECT 
             @LoginName AS LoginName,
-            ISNULL(@DBUserName, N'user_docgia') AS UserName,
+            ISNULL(@DBUserName, N'4') AS UserName,
             N'DOCGIA' AS RoleName,
             0 AS MANV,
             N'Độc Giả (Sinh Viên)' AS HoTen,
