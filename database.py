@@ -8,8 +8,8 @@ import os
 from typing import Optional, Dict, Any
 import pyodbc
 
-# Cấu hình máy chủ SQL Server mặc định (ưu tiên Docker localhost,14333)
-SERVER_NAME = os.environ.get("DB_HOST", "localhost,14333")
+# Cấu hình mặc định khớp với compose.yaml và SSMS của dự án.
+SERVER_NAME = os.environ.get("DB_HOST", "localhost,1433")
 DATABASE_NAME = os.environ.get("DB_NAME", "LibraryManagement")
 
 # Thông tin phiên đăng nhập hiện tại (Lưu sau khi xác thực thành công)
@@ -102,9 +102,9 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     if not login_clean or not pwd_clean:
         raise ValueError("Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")
 
-    # Danh sách các cấu hình CSDL khả dụng (ưu tiên Docker localhost,14333)
-    docker_port = os.environ.get("MSSQL_PORT", "14333")
-    candidate_servers = [
+    # Ưu tiên đúng cổng Docker của dự án, sau đó mới thử các cấu hình cục bộ cũ.
+    docker_port = os.environ.get("MSSQL_PORT", "1433")
+    candidate_servers_raw = [
         (f"localhost,{docker_port}", "LibraryManagement"),
         ("localhost,1433", "LibraryManagement"),
         ("localhost", "LibraryManagement"),
@@ -113,6 +113,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
         ("localhost", "QLTV"),
         (r"localhost\SQLEXPRESS", "LibraryManagement"),
     ]
+    candidate_servers = list(dict.fromkeys(candidate_servers_raw))
 
     conn = None
     last_login_err = None

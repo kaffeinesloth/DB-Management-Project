@@ -48,6 +48,11 @@ def apply_ctk_patch():
     orig_delete = ctk.CTkEntry.delete
 
     def patched_delete(self, first_index, last_index=None):
+        # Restore the real entry options before deleting an active placeholder.
+        # Otherwise CTkEntry can remember show="" as the password-field setting,
+        # causing shortcut-filled passwords to be displayed in plain text.
+        if getattr(self, "_placeholder_text_active", False):
+            self._deactivate_placeholder()
         orig_delete(self, first_index, last_index)
         if getattr(self, "_placeholder_text", None) is not None and self._entry.get() == "":
             try:
@@ -58,7 +63,8 @@ def apply_ctk_patch():
             except Exception:
                 pass
             self._is_focused = False
-            self._activate_placeholder()
+            if not getattr(self, "_placeholder_text_active", False):
+                self._activate_placeholder()
 
     ctk.CTkEntry.delete = patched_delete
 
