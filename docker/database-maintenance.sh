@@ -6,6 +6,10 @@ action="${1:-}"
 backup_file="${2:-}"
 
 case "${action}" in
+    setup)
+        backup_file=LibraryManagement.bak
+        sql_action=SETUP
+        ;;
     backup)
         if [[ -z "${backup_file}" ]]; then
             backup_file="LibraryManagement_$(date +%Y%m%d_%H%M%S).bak"
@@ -38,7 +42,7 @@ case "${action}" in
         exit 0
         ;;
     *)
-        echo "Usage: $0 {backup|verify|restore|list} [backup-file.bak]" >&2
+        echo "Usage: $0 {setup|backup|verify|restore|list} [backup-file.bak]" >&2
         exit 2
         ;;
 esac
