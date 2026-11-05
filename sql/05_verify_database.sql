@@ -210,6 +210,14 @@ BEGIN
     ;THROW 50106, 'A teacher-required borrowing report view is missing.', 1;
 END;
 
+IF OBJECT_ID(N'dbo.fn_BaoCao_QuaHan', N'IF') IS NULL
+   OR OBJECT_ID(N'dbo.fn_BaoCao_TanSuat', N'IF') IS NULL
+   OR OBJECT_ID(N'dbo.fn_BaoCao_SachCanXemXet', N'IF') IS NULL
+   OR OBJECT_ID(N'dbo.sp_ThongKe_TheoKy', N'P') IS NULL
+BEGIN
+    ;THROW 50108, 'A reports-and-statistics object is missing. Run 06_reports.sql.', 1;
+END;
+
 IF DATABASE_PRINCIPAL_ID(N'library_app_role') IS NULL
 BEGIN
     ;THROW 50107, 'The shared application database role is missing.', 1;

@@ -81,6 +81,9 @@ echo "Running 03_login_and_permissions.sql..."
     -v APP_DB_USER="${app_db_user}" APP_DB_PASSWORD="${app_db_password_sql}" \
     -i /docker-init/sql/03_login_and_permissions.sql
 
+# Reports grant EXECUTE to the application role, so they run after 03.
+run_script /docker-init/sql/06_reports.sql
+
 run_script /docker-init/sql/05_verify_database.sql
 
 echo "Database initialization completed successfully."
