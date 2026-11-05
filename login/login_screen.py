@@ -18,6 +18,7 @@ class LoginForm(ctk.CTk):
         self.geometry("420x560")
         self.resizable(False, False)
         self.logged_in_user = None
+        self.password_visible = False
 
         # Căn giữa màn hình
         self.center_window()
@@ -45,7 +46,7 @@ class LoginForm(ctk.CTk):
         # Ô nhập tài khoản (Login name)
         self.txt_username = ctk.CTkEntry(
             self.frame, 
-            placeholder_text="Tên đăng nhập (admin / nv_mai)", 
+            placeholder_text="Tên đăng nhập nhân viên",
             width=300, 
             height=40
         )
@@ -61,15 +62,24 @@ class LoginForm(ctk.CTk):
         )
         self.txt_password.pack(pady=(0, 15))
 
+        self.chk_show_password = ctk.CTkCheckBox(
+            self.frame,
+            text="Hiện mật khẩu",
+            width=300,
+            font=ctk.CTkFont(size=11),
+            command=self._toggle_password,
+        )
+        self.chk_show_password.pack(pady=(0, 12))
+
         # Gợi ý tài khoản thử nghiệm
         self.lbl_hints = ctk.CTkLabel(
             self.frame,
-            text="Tài khoản thử nghiệm (Mật khẩu: 123456):\n• Quản lý: admin\n• Thủ thư: nv_mai / nv_nam\n• Độc giả tra cứu: docgia",
+            text="Tài khoản nhân viên (Mật khẩu: 123456):\n• Quản lý: admin\n• Thủ thư: nv_huong / nv_long / nv_nam\n• Độc giả được quản lý bằng thẻ, không đăng nhập",
             font=ctk.CTkFont(size=11),
             text_color="#9CA3AF",
             justify="left"
         )
-        self.lbl_hints.pack(pady=(0, 12))
+        self.lbl_hints.pack(pady=(0, 10))
 
         # Phím tắt chọn nhanh
         btn_box = ctk.CTkFrame(self.frame, fg_color="transparent")
@@ -77,9 +87,9 @@ class LoginForm(ctk.CTk):
 
         for title, u, p in [
             ("Admin", "admin", "123456"),
-            ("Thủ thư", "nv_mai", "123456"),
-            ("Độc giả", "docgia", "123456"),
-            ("Docker", "library_app", "LibraryApp_2026!")
+            ("Hương", "nv_huong", "123456"),
+            ("Long", "nv_long", "123456"),
+            ("Nam", "nv_nam", "123456"),
         ]:
             ctk.CTkButton(
                 btn_box,
@@ -103,6 +113,14 @@ class LoginForm(ctk.CTk):
         )
         self.btn_login.pack(pady=(0, 15))
 
+        self.lbl_connection = ctk.CTkLabel(
+            self.frame,
+            text="CSDL: localhost,1433 / LibraryManagement",
+            font=ctk.CTkFont(size=10),
+            text_color="#6B7280",
+        )
+        self.lbl_connection.pack(pady=(0, 5))
+
         # Phím tắt Enter để đăng nhập
         self.bind("<Return>", lambda event: self.handle_login())
 
@@ -115,6 +133,10 @@ class LoginForm(ctk.CTk):
         self.txt_password.delete(0, "end")
         self.txt_password.insert(0, p)
 
+    def _toggle_password(self):
+        self.password_visible = not self.password_visible
+        self.txt_password.configure(show="" if self.password_visible else "*")
+
     def center_window(self):
         self.update_idletasks()
         width = 420
@@ -125,7 +147,7 @@ class LoginForm(ctk.CTk):
 
     def handle_login(self):
         username = self.txt_username.get().strip()
-        password = self.txt_password.get().strip()
+        password = self.txt_password.get()
 
         if not username or not password:
             messagebox.showwarning("Thông báo", "Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")

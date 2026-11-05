@@ -25,6 +25,25 @@ CURRENT_SESSION: Dict[str, Any] = {
 connection: pyodbc.Connection | None = None
 
 
+def clear_session() -> None:
+    """Close the shared connection and remove credentials from memory."""
+    global connection
+    if connection is not None:
+        try:
+            connection.close()
+        except pyodbc.Error:
+            pass
+        connection = None
+
+    CURRENT_SESSION.update({
+        "login_name": "",
+        "password": "",
+        "user_info": None,
+        "active_server": SERVER_NAME,
+        "active_db": DATABASE_NAME,
+    })
+
+
 def build_connection_string(
     uid: str, 
     pwd: str, 
@@ -97,7 +116,8 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     3. Cập nhật vào CURRENT_SESSION để các truy vấn nghiệp vụ sau thực hiện dưới đúng quyền này.
     """
     login_clean = login_name.strip()
-    pwd_clean = password.strip()
+    # Passwords may legally contain leading/trailing spaces, so do not trim it.
+    pwd_clean = password
 
     if not login_clean or not pwd_clean:
         raise ValueError("Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")
@@ -156,7 +176,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
 
         if row:
             role_name = row[2]
-            vai_tro = "Quản lý" if role_name == "QUANLY" else ("Độc giả" if role_name == "DOCGIA" else "Thủ thư")
+            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
             if len(row) > 6 and row[6]:
                 vai_tro = row[6]
 
@@ -171,8 +191,8 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
             }
         else:
             # Fallback nếu login quản trị Docker (sa / library_app) không có bản ghi trong sp_LayThongTinNhanVien
-            role_name = "QUANLY" if login_clean in ["admin", "sa", "library_app"] else ("DOCGIA" if "docgia" in login_clean.lower() else "THUTHU")
-            vai_tro = "Quản lý" if role_name == "QUANLY" else ("Độc giả" if role_name == "DOCGIA" else "Thủ thư")
+            role_name = "QUANLY" if login_clean in ["admin", "sa", "library_app"] else "THUTHU"
+            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
             user_info = {
                 "LoginName": login_clean,
                 "UserName": login_clean,
