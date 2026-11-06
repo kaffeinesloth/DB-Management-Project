@@ -1,84 +1,219 @@
-"""Backup and restore validation and database operations."""
+"""Backup and restore database operations (DAO layer).
 
-import datetime
-from typing import List, Dict, Any, Optional
-from database import get_connection, CURRENT_SESSION
+Toàn bộ lệnh BACKUP / RESTORE được gửi qua một kết nối RIÊNG tới database
+[master] với autocommit = True (BACKUP/RESTORE không được chạy trong
+transaction) và query timeout = 300 giây.
+"""
+
+import os
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import pyodbc
+
+from database import CURRENT_SESSION, get_connection
+
+# Thư mục backup bên trong container SQL Server (Docker volume sqlserver-backups)
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/var/opt/mssql/backups")
+
+# Timeout (giây) cho các lệnh BACKUP / VERIFY / RESTORE
+MAINTENANCE_TIMEOUT = 300
+
+_SAFE_DB_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _db_name() -> str:
+    """Tên CSDL đang làm việc; được kiểm tra để ghép an toàn vào [..]."""
+    name = CURRENT_SESSION.get("active_db") or "LibraryManagement"
+    if not _SAFE_DB_NAME.match(name):
+        raise ValueError(f"Tên CSDL không hợp lệ: {name!r}")
+    return name
+
+
+def get_backup_path() -> str:
+    """Đường dẫn tệp .bak cố định, ví dụ /var/opt/mssql/backups/LibraryManagement.bak."""
+    return f"{BACKUP_DIR.rstrip('/')}/{_db_name()}.bak"
+
+
+def _open_master_connection() -> pyodbc.Connection:
+    """Kết nối độc lập tới [master] dành cho BACKUP / RESTORE."""
+    conn = get_connection(database="master")
+    conn.autocommit = True
+    conn.timeout = MAINTENANCE_TIMEOUT
+    return conn
+
+
+def _drain(cursor: pyodbc.Cursor) -> None:
+    """Đọc hết các result set / thông báo của BACKUP-RESTORE.
+
+    Nếu đóng cursor trước khi SQL Server gửi xong các thông báo tiến độ,
+    lệnh BACKUP/RESTORE có thể bị hủy giữa chừng.
+    """
+    while cursor.nextset():
+        pass
 
 
 class BackupActions:
     """Các thao tác sao lưu và phục hồi CSDL SQL Server."""
 
     @staticmethod
-    def create_backup(custom_name: Optional[str] = None) -> str:
-        """
-        Tạo một bản sao lưu (Full Database Backup).
-        Sử dụng thư mục backup tiêu chuẩn của SQL Server (/var/opt/mssql/backups trên Docker).
-        """
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = custom_name.strip() if custom_name and custom_name.strip() else f"backup_library_{timestamp}.bak"
-        if not file_name.endswith(".bak"):
-            file_name += ".bak"
-
-        db_name = CURRENT_SESSION.get("active_db", "LibraryManagement")
-        backup_path = f"/var/opt/mssql/backups/{file_name}"
-
-        query = f"""
-            BACKUP DATABASE [{db_name}]
-            TO DISK = N'{backup_path}'
-            WITH FORMAT, INIT, NAME = N'Library-Full-Backup-{timestamp}', SKIP, NOREWIND, NOUNLOAD, STATS = 10;
-        """
-        # Backup yêu cầu quyền quản trị (SA / QUANLY)
-        with get_connection() as conn:
-            # Tắt autocommit để thực thi lệnh DDL Backup
-            conn.autocommit = True
-            cursor = conn.cursor()
-            cursor.execute(query)
-            conn.autocommit = False
-
-        return file_name
-
-    @staticmethod
     def get_backup_history() -> List[Dict[str, Any]]:
-        """Lấy lịch sử các bản sao lưu từ msdb."""
-        query = """
-            SELECT TOP 20
-                bs.database_name,
-                bmf.physical_device_name,
-                bs.backup_start_date,
-                bs.backup_finish_date,
-                CAST(ROUND(bs.backup_size / 1024.0 / 1024.0, 2) AS NUMERIC(10, 2)) AS SizeMB,
-                bs.user_name
-            FROM msdb.dbo.backupset bs
-            INNER JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
-            WHERE bs.type = 'D'
-            ORDER BY bs.backup_finish_date DESC;
+        """Đọc lịch sử sao lưu từ VIEW dbo.v_LichSuBackup (bản mới nhất ở đầu).
+
+        Chỉ lấy các bản nằm trong tệp .bak cố định của ứng dụng, vì RESTORE
+        dùng WITH FILE = position trên đúng tệp này.
         """
+        query = """
+            SELECT backup_set_id, position, TenBanSaoLuu, DienGiai, NgayGioBackup,
+                   KichThuocMB, NguoiSaoLuu, physical_device_name
+            FROM dbo.v_LichSuBackup
+            WHERE REPLACE(physical_device_name, '\', '/') = REPLACE(?, '\', '/')
+            ORDER BY NgayGioBackup DESC, position DESC;
+        """
+        conn = get_connection()
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query)
-                cols = [col[0] for col in cursor.description]
-                rows = cursor.fetchall()
-                results = []
-                for r in rows:
-                    d = dict(zip(cols, r))
-                    # Lấy tên file ngắn gọn từ đường dẫn
-                    raw_path = str(d.get("physical_device_name", ""))
-                    d["filename"] = raw_path.replace("\\", "/").split("/")[-1]
-                    d["date_str"] = d["backup_finish_date"].strftime("%d/%m/%Y %H:%M:%S") if d.get("backup_finish_date") else ""
-                    results.append(d)
-                return results
-        except Exception:
-            return []
+            cursor = conn.cursor()
+            cursor.execute(query, (get_backup_path(),))
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        finally:
+            conn.close()
 
     @staticmethod
-    def verify_backup(file_name: str) -> bool:
-        """Kiểm tra tính toàn vẹn của tệp sao lưu."""
-        backup_path = f"/var/opt/mssql/backups/{file_name.strip()}"
-        query = f"RESTORE VERIFYONLY FROM DISK = N'{backup_path}';"
-        with get_connection() as conn:
-            conn.autocommit = True
+    def create_backup(overwrite_old: bool = False, description: str = "") -> str:
+        """FULL BACKUP vào tệp cố định.
+
+        overwrite_old = True  -> WITH FORMAT, INIT : xóa các bản cũ, bắt đầu lại từ Bản 1.
+        overwrite_old = False -> WITH NOINIT       : nối tiếp bản mới vào cuối tệp.
+
+        Trả về đường dẫn tệp .bak đã ghi.
+        """
+        db = _db_name()
+        path = get_backup_path()
+        note = (description or "").strip()
+        stamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        name = (note or f"{db} - Full Backup {stamp}")[:128]
+        desc = (note or f"Sao lưu toàn bộ CSDL {db} lúc {stamp}")[:255]
+
+        if overwrite_old:
+            options = f"FORMAT, INIT, MEDIANAME = N'{db}_Backup', "
+        else:
+            options = "NOINIT, "
+
+        sql = f"""
+            DECLARE @path NVARCHAR(260) = ?, @name NVARCHAR(128) = ?, @desc NVARCHAR(255) = ?;
+            BACKUP DATABASE [{db}]
+                TO DISK = @path
+                WITH {options}NAME = @name, DESCRIPTION = @desc, CHECKSUM;
+        """
+        conn = _open_master_connection()
+        try:
             cursor = conn.cursor()
-            cursor.execute(query)
-            conn.autocommit = False
-            return True
+            cursor.execute(sql, (path, name, desc))
+            _drain(cursor)
+        finally:
+            conn.close()
+        return path
+
+    @staticmethod
+    def verify_backup(position: int) -> bool:
+        """RESTORE VERIFYONLY ... WITH FILE = position. Ném lỗi nếu bản sao lưu hỏng."""
+        pos = int(position)
+        if pos < 1:
+            raise ValueError("Vị trí bản sao lưu phải >= 1.")
+
+        sql = """
+            DECLARE @path NVARCHAR(260) = ?, @pos INT = ?;
+            RESTORE VERIFYONLY FROM DISK = @path WITH FILE = @pos, CHECKSUM;
+        """
+        conn = _open_master_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (get_backup_path(), pos))
+            _drain(cursor)
+        finally:
+            conn.close()
+        return True
+
+    @staticmethod
+    def restore_backup(position: int, expected_backup_set_id: Optional[int] = None) -> bool:
+        """Phục hồi CSDL về bản sao lưu thứ `position` trong tệp .bak.
+
+        Chạy từ [master] trên kết nối độc lập:
+          1. ALTER DATABASE ... SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+          2. RESTORE DATABASE ... WITH FILE = position, REPLACE, RECOVERY
+          3. ALTER DATABASE ... SET MULTI_USER
+        Khối TRY...CATCH luôn trả CSDL về MULTI_USER nếu có lỗi giữa chừng.
+
+        expected_backup_set_id: backup_set_id của dòng người dùng đã chọn. Nếu
+        tệp đã bị Reset / thay đổi sau khi tải danh sách, vị trí `position`
+        có thể trỏ tới một bản KHÁC -> từ chối phục hồi.
+        """
+        pos = int(position)
+        if pos < 1:
+            raise ValueError("Vị trí bản sao lưu phải >= 1.")
+
+        if expected_backup_set_id is not None:
+            current = {h["position"]: h["backup_set_id"] for h in BackupActions.get_backup_history()}
+            if current.get(pos) != expected_backup_set_id:
+                raise ValueError(
+                    f"Bản sao lưu số {pos} trong tệp đã thay đổi kể từ khi tải danh sách "
+                    "(tệp có thể vừa bị Reset). Vui lòng bấm 'Làm Mới Danh Sách' và chọn lại."
+                )
+
+        db = _db_name()
+        sql = f"""
+            SET NOCOUNT ON;
+            DECLARE @path NVARCHAR(260) = ?, @pos INT = ?;
+            BEGIN TRY
+                ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+
+                RESTORE DATABASE [{db}]
+                    FROM DISK = @path
+                    WITH FILE = @pos, REPLACE, RECOVERY;
+
+                ALTER DATABASE [{db}] SET MULTI_USER;
+            END TRY
+            BEGIN CATCH
+                BEGIN TRY
+                    IF DB_ID(N'{db}') IS NOT NULL
+                        ALTER DATABASE [{db}] SET MULTI_USER;
+                END TRY
+                BEGIN CATCH
+                END CATCH;
+                THROW;
+            END CATCH;
+        """
+        conn = _open_master_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(sql, (get_backup_path(), pos))
+            _drain(cursor)
+        except Exception:
+            # Lưới an toàn phía ứng dụng: nếu lỗi xảy ra ngoài khối CATCH
+            # (mất kết nối, timeout...) vẫn cố mở lại MULTI_USER.
+            BackupActions._ensure_multi_user(db)
+            raise
+        finally:
+            conn.close()
+        return True
+
+    @staticmethod
+    def _ensure_multi_user(db: str) -> None:
+        try:
+            conn = _open_master_connection()
+        except Exception:
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_access_desc FROM sys.databases WHERE name = ?", (db,)
+            )
+            row = cursor.fetchone()
+            if row and row[0] != "MULTI_USER":
+                cursor.execute(f"ALTER DATABASE [{db}] SET MULTI_USER;")
+        except Exception:
+            pass
+        finally:
+            conn.close()

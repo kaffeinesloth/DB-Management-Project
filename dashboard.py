@@ -49,6 +49,26 @@ class MainDashboard(ctk.CTk):
         # Mặc định mở Tab Sách
         self.select_tab("sach")
 
+        # Không cho đóng cửa sổ khi đang BACKUP / RESTORE
+        self.protocol("WM_DELETE_WINDOW", self.handle_close)
+
+    def _maintenance_running(self) -> bool:
+        """True nếu một màn hình đang chạy BACKUP / VERIFY / RESTORE."""
+        busy = any(getattr(view, "is_busy", False) for view in self.views.values())
+        if busy:
+            messagebox.showwarning(
+                "Đang sao lưu / phục hồi",
+                "Hệ thống đang sao lưu hoặc phục hồi CSDL.\n\n"
+                "Vui lòng chờ thao tác hoàn tất rồi mới đóng ứng dụng hoặc đăng xuất, "
+                "nếu không CSDL có thể bị kẹt ở trạng thái RESTORING.",
+            )
+        return busy
+
+    def handle_close(self):
+        if self._maintenance_running():
+            return
+        self.destroy()
+
     def center_window(self):
         self.update_idletasks()
         width = 1260
@@ -201,6 +221,8 @@ class MainDashboard(ctk.CTk):
             self.views[tab_id].grid(row=0, column=0, sticky="nsew")
 
     def handle_logout(self):
+        if self._maintenance_running():
+            return
         confirm = messagebox.askyesno("Đăng xuất", "Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")
         if confirm:
             clear_session()
