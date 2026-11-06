@@ -1,10 +1,11 @@
-"""Report queries and helpers. SQL lives in sql/06_reports.sql."""
+"""Báo cáo thống kê: truy vấn và tiện ích. SQL nằm trong sql/06_reports.sql."""
 
 import calendar
 import csv
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import database
 
@@ -27,17 +28,17 @@ class Period:
 
     def __post_init__(self) -> None:
         if not 1900 <= self.year <= 2078:
-            raise ValueError("Year must be between 1900 and 2078.")
+            raise ValueError("Năm phải từ 1900 đến 2078.")
         if self.month is not None and self.quarter is not None:
-            raise ValueError("Choose a month or a quarter, not both.")
+            raise ValueError("Chỉ chọn tháng hoặc quý, không chọn cả hai.")
         if self.month is not None and not 1 <= self.month <= 12:
-            raise ValueError("Month must be between 1 and 12.")
+            raise ValueError("Tháng phải từ 1 đến 12.")
         if self.quarter is not None and not 1 <= self.quarter <= 4:
-            raise ValueError("Quarter must be between 1 and 4.")
+            raise ValueError("Quý phải từ 1 đến 4.")
 
     @property
     def bounds(self) -> tuple[date, date]:
-        """First and last calendar day of the period (both inclusive)."""
+        """Ngày đầu và ngày cuối của kỳ (tính cả hai đầu)."""
         if self.month is not None:
             first_month = last_month = self.month
         elif self.quarter is not None:
@@ -50,30 +51,55 @@ class Period:
     @property
     def label(self) -> str:
         if self.month is not None:
-            return f"Month {self.month}/{self.year}"
+            return f"Tháng {self.month}/{self.year}"
         if self.quarter is not None:
-            return f"Q{self.quarter}/{self.year}"
-        return f"Year {self.year}"
+            return f"Quý {self.quarter}/{self.year}"
+        return f"Năm {self.year}"
 
     def as_of(self, today: date | None = None) -> date:
-        """End of the period, or today if the period has not ended yet."""
+        """Ngày cuối kỳ, hoặc hôm nay nếu kỳ chưa kết thúc."""
         today = today or date.today()
         return min(self.bounds[1], today)
 
 
-def _fetch(sql: str, params: tuple) -> tuple[list[str], list[tuple]]:
-    cursor = database.get_connection().cursor()
+def _fetch(sql: str, params: tuple = ()) -> tuple[list[str], list[tuple]]:
+    """Run one query on the logged-in user's connection and close it afterwards."""
+    conn = database.get_connection()
     try:
+        cursor = conn.cursor()
         cursor.execute(sql, params)
         keys = [column[0] for column in cursor.description]
         rows = [tuple(row) for row in cursor.fetchall()]
-    finally:
         cursor.close()
+    finally:
+        conn.close()
     return keys, rows
 
 
 def _vnd(amount: int | None) -> str:
-    return f"{int(amount or 0):,} VND".replace(",", ".")
+    return f"{int(amount or 0):,} đ".replace(",", ".")
+
+
+def overview() -> dict[str, Any]:
+    """Chỉ số tổng quan hiện tại cho các thẻ KPI."""
+    _, rows = _fetch(
+        "SELECT "
+        "(SELECT COUNT(*) FROM dbo.ISBN), "
+        "(SELECT COUNT(*) FROM dbo.SACH), "
+        "(SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1), "
+        "(SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1), "
+        "(SELECT COUNT(*) FROM dbo.fn_BaoCao_QuaHan(CONVERT(DATE, GETDATE()))), "
+        "(SELECT COALESCE(SUM(TIENPHAT), 0) FROM dbo.fn_BaoCao_QuaHan(CONVERT(DATE, GETDATE())))"
+    )
+    titles, copies, on_loan, readers, overdue, fines = rows[0]
+    return {
+        "TongDauSach": titles,
+        "TongCuonSach": copies,
+        "DangMuon": on_loan,
+        "DocGiaHoatDong": readers,
+        "SoQuaHan": overdue,
+        "TienPhatUocTinh": fines,
+    }
 
 
 def overdue_readers(as_of: date) -> ReportResult:
@@ -87,16 +113,16 @@ def overdue_readers(as_of: date) -> ReportResult:
     readers = len({row[0] for row in rows})
     total_fine = sum(row[-1] for row in rows)
     return ReportResult(
-        title=f"Overdue readers as of {as_of:%d/%m/%Y}",
+        title=f"Độc giả mượn sách quá hạn tính đến {as_of:%d/%m/%Y}",
         columns=[
-            "Reader ID", "Reader", "Phone", "Email", "Loan", "Copy", "Title",
-            "Borrowed", "Due", "Days late", "Fine (VND)",
+            "Mã ĐG", "Độc giả", "Điện thoại", "Email", "Mã phiếu", "Mã sách", "Tên sách",
+            "Ngày mượn", "Hạn trả", "Số ngày trễ", "Tiền phạt (đ)",
         ],
         keys=keys,
         rows=rows,
         summary=(
-            f"{readers} reader(s), {len(rows)} book(s) overdue, "
-            f"fines to date {_vnd(total_fine)}"
+            f"{readers} độc giả, {len(rows)} cuốn quá hạn, "
+            f"tiền phạt tạm tính {_vnd(total_fine)}"
         ),
     )
 
@@ -112,12 +138,15 @@ def usage_frequency(period: Period) -> ReportResult:
     loans = sum(row[5] for row in rows)
     unused = sum(1 for row in rows if row[5] == 0)
     return ReportResult(
-        title=f"Book usage frequency - {period.label}",
-        columns=["Rank", "ISBN", "Title", "Category", "Copies", "Loans", "Readers"],
+        title=f"Tần suất sử dụng sách - {period.label}",
+        columns=["Hạng", "ISBN", "Tên sách", "Thể loại", "Số bản", "Lượt mượn", "Số độc giả"],
         keys=keys,
         rows=rows,
         period=(start, end),
-        summary=f"{loans} loan(s) across {len(rows) - unused} title(s); {unused} title(s) not borrowed",
+        summary=(
+            f"{loans} lượt mượn trên {len(rows) - unused} đầu sách; "
+            f"{unused} đầu sách không được mượn"
+        ),
     )
 
 
@@ -131,29 +160,29 @@ def stock_review(period: Period) -> ReportResult:
     )
     damaged = sum(1 for row in rows if row[6] == "Hư hỏng")
     return ReportResult(
-        title=f"Stock review - {period.label}",
-        columns=["Copy", "ISBN", "Title", "Shelf", "Location", "Last borrowed", "Reason"],
+        title=f"Sách cần xem xét thanh lý - {period.label}",
+        columns=["Mã sách", "ISBN", "Tên sách", "Kệ", "Vị trí", "Lần mượn cuối", "Lý do"],
         keys=keys,
         rows=rows,
         period=(start, end),
-        summary=f"{len(rows)} copy(ies) to review: {damaged} damaged, {len(rows) - damaged} not borrowed",
+        summary=f"{len(rows)} cuốn cần xem xét: {damaged} hư hỏng, {len(rows) - damaged} không có độc giả mượn",
     )
 
 
 SUMMARY_LABELS = {
-    "KY": "Period",
-    "TUNGAY": "From",
-    "DENNGAY": "To",
-    "NGAYCHOT": "Overdue figures as of",
-    "SOPHIEUMUON": "Loan slips",
-    "SOLUOTMUON": "Books lent",
-    "SODOCGIAMUON": "Readers who borrowed",
-    "SOLUOTTRA": "Books returned",
-    "SOLUOTTRATRE": "Books returned late",
-    "TIENPHATTRATRE": "Late-return fines (VND)",
-    "SOSACHQUAHAN_CUOIKY": "Books overdue at period end",
-    "SODOCGIAQUAHAN_CUOIKY": "Readers overdue at period end",
-    "TIENPHATQUAHAN_CUOIKY": "Outstanding overdue fines (VND)",
+    "KY": "Kỳ báo cáo",
+    "TUNGAY": "Từ ngày",
+    "DENNGAY": "Đến ngày",
+    "NGAYCHOT": "Số liệu quá hạn tính đến",
+    "SOPHIEUMUON": "Số phiếu mượn",
+    "SOLUOTMUON": "Số lượt mượn sách",
+    "SODOCGIAMUON": "Số độc giả mượn",
+    "SOLUOTTRA": "Số lượt trả sách",
+    "SOLUOTTRATRE": "Số lượt trả trễ",
+    "TIENPHATTRATRE": "Tiền phạt trả trễ (đ)",
+    "SOSACHQUAHAN_CUOIKY": "Sách quá hạn cuối kỳ",
+    "SODOCGIAQUAHAN_CUOIKY": "Độc giả quá hạn cuối kỳ",
+    "TIENPHATQUAHAN_CUOIKY": "Tiền phạt quá hạn chưa thu (đ)",
 }
 
 
@@ -165,9 +194,9 @@ def period_summary(period: Period) -> ReportResult:
     values = rows[0] if rows else ()
     pivot = [(SUMMARY_LABELS.get(key, key), value) for key, value in zip(keys, values)]
     return ReportResult(
-        title=f"Period summary - {period.label}",
-        columns=["Metric", "Value"],
-        keys=["METRIC", "VALUE"],
+        title=f"Thống kê tổng hợp - {period.label}",
+        columns=["Chỉ tiêu", "Giá trị"],
+        keys=["CHITIEU", "GIATRI"],
         rows=pivot,
         period=period.bounds,
     )
@@ -181,12 +210,12 @@ def format_value(value) -> str:
             return value.strftime("%d/%m/%Y %H:%M")
         return value.strftime("%d/%m/%Y")
     if isinstance(value, bool):
-        return "Yes" if value else "No"
+        return "Có" if value else "Không"
     return str(value)
 
 
 def export_csv(result: ReportResult, path: str | Path) -> Path:
-    """Write the report as UTF-8 CSV with BOM so Excel shows Vietnamese text."""
+    """Ghi báo cáo ra CSV UTF-8 có BOM để Excel hiển thị đúng tiếng Việt."""
     path = Path(path)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)

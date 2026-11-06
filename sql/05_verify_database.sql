@@ -87,7 +87,18 @@ VALUES
     (N'CT_PHIEUMUON', N'TRA', N'bit', 1, 0, 0),
     (N'CT_PHIEUMUON', N'MANVNS', N'int', 4, 1, 0);
 
-IF (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) <> 11
+/* SSMS may create dbo.sysdiagrams for Database Diagrams. It is tooling
+   metadata, not a domain table, so preserve it while verifying the 11-table
+   teacher specification. */
+IF
+(
+    SELECT COUNT(*)
+    FROM sys.tables AS table_object
+    INNER JOIN sys.schemas AS schema_object
+        ON schema_object.schema_id = table_object.schema_id
+    WHERE table_object.is_ms_shipped = 0
+      AND NOT (schema_object.name = N'dbo' AND table_object.name = N'sysdiagrams')
+) <> 11
 BEGIN
     ;THROW 50100, 'The teacher specification requires exactly 11 user tables.', 1;
 END;
@@ -137,6 +148,7 @@ IF
     INNER JOIN sys.schemas AS schema_object
         ON schema_object.schema_id = table_object.schema_id
     WHERE schema_object.name = N'dbo'
+      AND table_object.name <> N'sysdiagrams'
 ) <> (SELECT COUNT(*) FROM @ExpectedColumns)
 BEGIN
     ;THROW 50102, 'The 11 required tables contain unexpected extra columns.', 1;

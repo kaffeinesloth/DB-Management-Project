@@ -251,9 +251,21 @@ BEGIN
 END;
 GO
 
-/* The application role already has SELECT on dbo (covers the functions). */
+/*
+    library_app_role and QUANLY already have SELECT on schema dbo (covers the
+    functions); QUANLY also has EXECUTE. THUTHU (librarian) only has
+    per-object grants, so it needs each report object granted explicitly.
+*/
 IF DATABASE_PRINCIPAL_ID(N'library_app_role') IS NOT NULL
 BEGIN
     GRANT EXECUTE ON OBJECT::dbo.sp_ThongKe_TheoKy TO [library_app_role];
+END;
+
+IF DATABASE_PRINCIPAL_ID(N'THUTHU') IS NOT NULL
+BEGIN
+    GRANT SELECT ON OBJECT::dbo.fn_BaoCao_QuaHan TO [THUTHU];
+    GRANT SELECT ON OBJECT::dbo.fn_BaoCao_TanSuat TO [THUTHU];
+    GRANT SELECT ON OBJECT::dbo.fn_BaoCao_SachCanXemXet TO [THUTHU];
+    GRANT EXECUTE ON OBJECT::dbo.sp_ThongKe_TheoKy TO [THUTHU];
 END;
 GO
