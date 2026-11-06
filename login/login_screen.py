@@ -4,7 +4,7 @@ import customtkinter as ctk
 import ctk_patch
 from tkinter import messagebox
 from typing import Optional, Callable
-from database import dang_nhap_he_thong
+from database import dang_nhap_he_thong, SERVER_NAME, DATABASE_NAME
 
 
 class LoginForm(ctk.CTk):
@@ -115,7 +115,7 @@ class LoginForm(ctk.CTk):
 
         self.lbl_connection = ctk.CTkLabel(
             self.frame,
-            text="CSDL: localhost,1433 / LibraryManagement",
+            text=f"CSDL: {SERVER_NAME} / {DATABASE_NAME}",
             font=ctk.CTkFont(size=10),
             text_color="#6B7280",
         )

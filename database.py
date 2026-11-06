@@ -8,8 +8,17 @@ import os
 from typing import Optional, Dict, Any
 import pyodbc
 
-# Cấu hình mặc định khớp với compose.yaml và SSMS của dự án.
-SERVER_NAME = os.environ.get("DB_HOST", "localhost,1433")
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Tải cấu hình từ file .env nếu có
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
+
+# Cấu hình máy chủ SQL Server mặc định (ưu tiên Docker localhost,14333 của dự án)
+_default_port = os.environ.get("MSSQL_PORT", "14333")
+SERVER_NAME = os.environ.get("DB_HOST", f"localhost,{_default_port}")
 DATABASE_NAME = os.environ.get("DB_NAME", "LibraryManagement")
 
 # Thông tin phiên đăng nhập hiện tại (Lưu sau khi xác thực thành công)
@@ -123,15 +132,17 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
         raise ValueError("Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")
 
     # Ưu tiên đúng cổng Docker của dự án, sau đó mới thử các cấu hình cục bộ cũ.
-    docker_port = os.environ.get("MSSQL_PORT", "1433")
+    # Ưu tiên đúng cổng Docker của dự án (14333/1433), sau đó mới thử các cấu hình cục bộ cũ.
+    docker_port = os.environ.get("MSSQL_PORT", "14333")
     candidate_servers_raw = [
         (f"localhost,{docker_port}", "LibraryManagement"),
+        ("localhost,14333", "LibraryManagement"),
         ("localhost,1433", "LibraryManagement"),
         ("localhost", "LibraryManagement"),
+        (r"localhost\SQLEXPRESS", "LibraryManagement"),
         (r"localhost\SQLEXPRESS", "QLTV"),
         ("localhost,1433", "QLTV"),
         ("localhost", "QLTV"),
-        (r"localhost\SQLEXPRESS", "LibraryManagement"),
     ]
     candidate_servers = list(dict.fromkeys(candidate_servers_raw))
 
