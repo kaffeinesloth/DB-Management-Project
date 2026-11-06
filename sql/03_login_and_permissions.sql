@@ -359,16 +359,23 @@ BEGIN
         nv.EMAIL,
         CAST(CASE WHEN dp.principal_id IS NULL THEN 0 ELSE 1 END AS BIT) AS DaCoTaiKhoan,
         SUSER_SNAME(dp.sid) AS LoginName,
-        role_dp.name AS RoleName
+        app_role.RoleName
     FROM dbo.NHANVIEN AS nv
     LEFT JOIN sys.database_principals AS dp
       ON dp.name = CONVERT(NVARCHAR(20), nv.MANV)
      AND dp.type = 'S'
-    LEFT JOIN sys.database_role_members AS drm
-      ON drm.member_principal_id = dp.principal_id
-    LEFT JOIN sys.database_principals AS role_dp
-      ON role_dp.principal_id = drm.role_principal_id
-     AND role_dp.name IN (N'QUANLY', N'THUTHU')
+    /* One row per employee: users may also belong to other roles
+       (e.g. db_backupoperator from 04_backup_and_restore.sql). */
+    OUTER APPLY
+    (
+        SELECT TOP (1) role_dp.name AS RoleName
+        FROM sys.database_role_members AS drm
+        INNER JOIN sys.database_principals AS role_dp
+            ON role_dp.principal_id = drm.role_principal_id
+        WHERE drm.member_principal_id = dp.principal_id
+          AND role_dp.name IN (N'QUANLY', N'THUTHU')
+        ORDER BY CASE role_dp.name WHEN N'QUANLY' THEN 0 ELSE 1 END
+    ) AS app_role
     WHERE nv.MANV > 0
     ORDER BY nv.MANV;
 END;
