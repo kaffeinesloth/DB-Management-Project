@@ -10,7 +10,8 @@ from reader_management.reader_screen import ReaderScreen
 from borrowing_and_returns.borrowing_screen import BorrowingScreen
 from reports.report_screen import ReportScreen
 from backup_and_restore.backup_screen import BackupScreen
-from database import CURRENT_SESSION
+from account_management.account_screen import AccountScreen
+from database import CURRENT_SESSION, clear_session
 
 
 class MainDashboard(ctk.CTk):
@@ -19,7 +20,6 @@ class MainDashboard(ctk.CTk):
     - Kế thừa trọn vẹn 100% giao diện, phân quyền và trải nghiệm từ feature/qltv.
     - Thanh điều hướng (Sidebar) tích hợp định danh nhân viên và nhóm quyền (RBAC).
     - Phân quyền động:
-        + Độc giả (DOCGIA): Chỉ mở Tab Tra cứu sách.
         + Thủ thư (THUTHU): Tab Sách, Độc giả, Mượn/Trả, Báo cáo thống kê.
         + Quản lý (QUANLY): Toàn quyền thêm mới/thanh lý sách và Sao lưu & Phục hồi CSDL.
     """
@@ -109,22 +109,12 @@ class MainDashboard(ctk.CTk):
         )
         lbl_name.pack(anchor="w", padx=12, pady=(10, 2))
 
-        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
-
-        if not is_docgia:
-            lbl_manv = ctk.CTkLabel(
-                profile_frame, 
-                text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}", 
-                font=ctk.CTkFont(size=12),
-                text_color="#9CA3AF"
-            )
-        else:
-            lbl_manv = ctk.CTkLabel(
-                profile_frame, 
-                text="Đối tượng: Bạn đọc", 
-                font=ctk.CTkFont(size=12),
-                text_color="#9CA3AF"
-            )
+        lbl_manv = ctk.CTkLabel(
+            profile_frame,
+            text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}",
+            font=ctk.CTkFont(size=12),
+            text_color="#9CA3AF"
+        )
         lbl_manv.pack(anchor="w", padx=12, pady=(0, 2))
 
         lbl_login = ctk.CTkLabel(
@@ -136,7 +126,7 @@ class MainDashboard(ctk.CTk):
         lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
 
         role_name = (self.current_user.get('RoleName') or 'QUANLY').upper()
-        role_color = "#10B981" if "QUANLY" in role_name else ("#A855F7" if is_docgia else "#60A5FA")
+        role_color = "#10B981" if "QUANLY" in role_name else "#60A5FA"
         lbl_role = ctk.CTkLabel(
             profile_frame, 
             text=f"Quyền: {self.current_user.get('RoleName', 'QUANLY')}", 
@@ -148,11 +138,7 @@ class MainDashboard(ctk.CTk):
         # Các nút chuyển Tab điều hướng theo phân quyền
         self.nav_buttons = {}
 
-        if is_docgia:
-            tabs = [
-                ("sach", "Tra Cứu Sách")
-            ]
-        elif "THUTHU" in role_name:
+        if "THUTHU" in role_name:
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
@@ -165,6 +151,7 @@ class MainDashboard(ctk.CTk):
                 ("docgia", "Quản Lý Độc Giả"),
                 ("muontra", "Mượn / Trả Sách"),
                 ("thongke", "Báo Cáo Thống Kê"),
+                ("taikhoan", "Quản Lý Tài Khoản"),
                 ("backup", "Sao Lưu & Phục Hồi")
             ]
 
@@ -201,14 +188,9 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        is_docgia = (self.current_user.get("RoleName") == "DOCGIA")
         role_name = (self.current_user.get("RoleName") or "QUANLY").upper()
 
-        if is_docgia:
-            self.views = {
-                "sach": BookScreen(self.main_container, self.current_user)
-            }
-        elif "THUTHU" in role_name:
+        if "THUTHU" in role_name:
             self.views = {
                 "sach": BookScreen(self.main_container, self.current_user),
                 "docgia": ReaderScreen(self.main_container, self.current_user),
@@ -221,6 +203,7 @@ class MainDashboard(ctk.CTk):
                 "docgia": ReaderScreen(self.main_container, self.current_user),
                 "muontra": BorrowingScreen(self.main_container, self.current_user),
                 "thongke": ReportScreen(self.main_container, self.current_user),
+                "taikhoan": AccountScreen(self.main_container, self.current_user),
                 "backup": BackupScreen(self.main_container, self.current_user),
             }
 
@@ -242,6 +225,7 @@ class MainDashboard(ctk.CTk):
             return
         confirm = messagebox.askyesno("Đăng xuất", "Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?")
         if confirm:
+            clear_session()
             if self.on_logout:
                 self.on_logout()
             self.withdraw()

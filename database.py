@@ -8,8 +8,8 @@ import os
 from typing import Optional, Dict, Any
 import pyodbc
 
-# Cấu hình máy chủ SQL Server mặc định (ưu tiên Docker localhost,14333)
-SERVER_NAME = os.environ.get("DB_HOST", "localhost,14333")
+# Cấu hình mặc định khớp với compose.yaml và SSMS của dự án.
+SERVER_NAME = os.environ.get("DB_HOST", "localhost,1433")
 DATABASE_NAME = os.environ.get("DB_NAME", "LibraryManagement")
 
 # Thông tin phiên đăng nhập hiện tại (Lưu sau khi xác thực thành công)
@@ -23,6 +23,25 @@ CURRENT_SESSION: Dict[str, Any] = {
 
 # Tương thích với khai báo trên nhánh main
 connection: pyodbc.Connection | None = None
+
+
+def clear_session() -> None:
+    """Close the shared connection and remove credentials from memory."""
+    global connection
+    if connection is not None:
+        try:
+            connection.close()
+        except pyodbc.Error:
+            pass
+        connection = None
+
+    CURRENT_SESSION.update({
+        "login_name": "",
+        "password": "",
+        "user_info": None,
+        "active_server": SERVER_NAME,
+        "active_db": DATABASE_NAME,
+    })
 
 
 def build_connection_string(
@@ -97,14 +116,15 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     3. Cập nhật vào CURRENT_SESSION để các truy vấn nghiệp vụ sau thực hiện dưới đúng quyền này.
     """
     login_clean = login_name.strip()
-    pwd_clean = password.strip()
+    # Passwords may legally contain leading/trailing spaces, so do not trim it.
+    pwd_clean = password
 
     if not login_clean or not pwd_clean:
         raise ValueError("Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")
 
-    # Danh sách các cấu hình CSDL khả dụng (ưu tiên Docker localhost,14333)
-    docker_port = os.environ.get("MSSQL_PORT", "14333")
-    candidate_servers = [
+    # Ưu tiên đúng cổng Docker của dự án, sau đó mới thử các cấu hình cục bộ cũ.
+    docker_port = os.environ.get("MSSQL_PORT", "1433")
+    candidate_servers_raw = [
         (f"localhost,{docker_port}", "LibraryManagement"),
         ("localhost,1433", "LibraryManagement"),
         ("localhost", "LibraryManagement"),
@@ -113,6 +133,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
         ("localhost", "QLTV"),
         (r"localhost\SQLEXPRESS", "LibraryManagement"),
     ]
+    candidate_servers = list(dict.fromkeys(candidate_servers_raw))
 
     conn = None
     last_login_err = None
@@ -155,7 +176,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
 
         if row:
             role_name = row[2]
-            vai_tro = "Quản lý" if role_name == "QUANLY" else ("Độc giả" if role_name == "DOCGIA" else "Thủ thư")
+            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
             if len(row) > 6 and row[6]:
                 vai_tro = row[6]
 
@@ -170,8 +191,8 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
             }
         else:
             # Fallback nếu login quản trị Docker (sa / library_app) không có bản ghi trong sp_LayThongTinNhanVien
-            role_name = "QUANLY" if login_clean in ["admin", "sa", "library_app"] else ("DOCGIA" if "docgia" in login_clean.lower() else "THUTHU")
-            vai_tro = "Quản lý" if role_name == "QUANLY" else ("Độc giả" if role_name == "DOCGIA" else "Thủ thư")
+            role_name = "QUANLY" if login_clean in ["admin", "sa", "library_app"] else "THUTHU"
+            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
             user_info = {
                 "LoginName": login_clean,
                 "UserName": login_clean,
