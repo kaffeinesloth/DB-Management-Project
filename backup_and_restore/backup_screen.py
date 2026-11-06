@@ -75,15 +75,17 @@ class BackupScreen(ctk.CTkFrame):
         cols = ("position", "name", "date", "size", "user")
         self.tree = ttk.Treeview(tree_container, columns=cols, show="headings", selectmode="browse")
         headings = {
-            "position": ("Bản Số", 70, "center"),
-            "name": ("Tên Bản Sao Lưu", 300, "w"),
-            "date": ("Thời Điểm Backup", 160, "center"),
-            "size": ("Kích Thước (MB)", 110, "e"),
-            "user": ("Người Thực Hiện", 120, "center"),
+            "position": ("Bản Số", 60, "center"),
+            "name": ("Tên Bản Sao Lưu", 160, "w"),
+            "date": ("Thời Điểm Backup", 145, "center"),
+            "size": ("Kích Thước (MB)", 122, "center"),
+            "user": ("Người Thực Hiện", 128, "center"),
         }
         for col, (text, width, anchor) in headings.items():
             self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor=anchor, stretch=(col == "name"))
+            stretch = col == "name"
+            self.tree.column(col, width=width, minwidth=width if not stretch else 120,
+                             anchor=anchor, stretch=stretch)
 
         self.tree.tag_configure("oddrow", background="#1A1D24")
         self.tree.tag_configure("evenrow", background="#222630")
@@ -170,6 +172,11 @@ class BackupScreen(ctk.CTkFrame):
         ).pack(anchor="w", padx=10, pady=(0, 8))
 
     # -------------------------------------------------------- busy / thread
+    @property
+    def is_busy(self) -> bool:
+        """True khi đang chạy BACKUP / VERIFY / RESTORE (Dashboard dùng để chặn đóng app)."""
+        return self._busy
+
     def _set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy
         state = "disabled" if busy else "normal"
@@ -209,7 +216,9 @@ class BackupScreen(ctk.CTkFrame):
             finally:
                 result["done"] = True
 
-        threading.Thread(target=worker, daemon=True).start()
+        # daemon=False: nếu tiến trình Python thoát, nó vẫn chờ BACKUP/RESTORE
+        # chạy xong thay vì cắt ngang kết nối (CSDL có thể kẹt ở RESTORING).
+        threading.Thread(target=worker, daemon=False).start()
 
         def poll() -> None:
             self._poll_after_id = None
@@ -277,11 +286,16 @@ class BackupScreen(ctk.CTkFrame):
         reset = bool(self.var_reset.get())
         note = self.txt_note.get().strip()
 
-        if reset and self.tree.get_children():
+        if reset:
+            # Luôn hỏi, kể cả khi bảng đang trống (có thể do tải lịch sử bị lỗi
+            # trong khi tệp .bak vẫn còn các bản cũ).
+            count = len(self.tree.get_children())
+            scope = (f"Toàn bộ {count} bản sao lưu cũ" if count
+                     else "Toàn bộ bản sao lưu cũ (nếu có)")
             if not messagebox.askyesno(
                 "Xác nhận xóa bản sao lưu cũ",
                 "Bạn đã chọn RESET tệp sao lưu (WITH FORMAT, INIT).\n\n"
-                f"Toàn bộ {len(self.tree.get_children())} bản sao lưu cũ trong tệp sẽ bị XÓA "
+                f"{scope} trong tệp sẽ bị XÓA "
                 "và bản mới sẽ bắt đầu lại từ Bản số 1.\n\nBạn có chắc chắn muốn tiếp tục?",
                 icon="warning",
             ):
@@ -359,12 +373,12 @@ class BackupScreen(ctk.CTkFrame):
             self.load_history()
             messagebox.showerror(
                 "Lỗi Phục Hồi",
-                f"Không thể phục hồi bản sao lưu số {pos}:\n\n{ex}\n\n"
-                "CSDL đã được đưa về chế độ MULTI_USER.",
+                f"Không thể phục hồi bản sao lưu số {pos}:\n\n{ex}",
             )
 
+        expected_id = row.get("backup_set_id")
         self._run_in_background(
             f"Đang phục hồi CSDL về Bản số {pos}...\nVui lòng không đóng ứng dụng.",
-            lambda: BackupActions.restore_backup(pos),
+            lambda: BackupActions.restore_backup(pos, expected_backup_set_id=expected_id),
             on_success, on_error,
         )

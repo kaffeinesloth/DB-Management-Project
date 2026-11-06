@@ -65,7 +65,7 @@ class BackupActions:
         dùng WITH FILE = position trên đúng tệp này.
         """
         query = """
-            SELECT position, TenBanSaoLuu, DienGiai, NgayGioBackup,
+            SELECT backup_set_id, position, TenBanSaoLuu, DienGiai, NgayGioBackup,
                    KichThuocMB, NguoiSaoLuu, physical_device_name
             FROM dbo.v_LichSuBackup
             WHERE REPLACE(physical_device_name, '\', '/') = REPLACE(?, '\', '/')
@@ -137,7 +137,7 @@ class BackupActions:
         return True
 
     @staticmethod
-    def restore_backup(position: int) -> bool:
+    def restore_backup(position: int, expected_backup_set_id: Optional[int] = None) -> bool:
         """Phục hồi CSDL về bản sao lưu thứ `position` trong tệp .bak.
 
         Chạy từ [master] trên kết nối độc lập:
@@ -145,10 +145,22 @@ class BackupActions:
           2. RESTORE DATABASE ... WITH FILE = position, REPLACE, RECOVERY
           3. ALTER DATABASE ... SET MULTI_USER
         Khối TRY...CATCH luôn trả CSDL về MULTI_USER nếu có lỗi giữa chừng.
+
+        expected_backup_set_id: backup_set_id của dòng người dùng đã chọn. Nếu
+        tệp đã bị Reset / thay đổi sau khi tải danh sách, vị trí `position`
+        có thể trỏ tới một bản KHÁC -> từ chối phục hồi.
         """
         pos = int(position)
         if pos < 1:
             raise ValueError("Vị trí bản sao lưu phải >= 1.")
+
+        if expected_backup_set_id is not None:
+            current = {h["position"]: h["backup_set_id"] for h in BackupActions.get_backup_history()}
+            if current.get(pos) != expected_backup_set_id:
+                raise ValueError(
+                    f"Bản sao lưu số {pos} trong tệp đã thay đổi kể từ khi tải danh sách "
+                    "(tệp có thể vừa bị Reset). Vui lòng bấm 'Làm Mới Danh Sách' và chọn lại."
+                )
 
         db = _db_name()
         sql = f"""

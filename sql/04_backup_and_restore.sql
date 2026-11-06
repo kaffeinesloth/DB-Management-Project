@@ -96,6 +96,17 @@ GO
 
 -- dbcreator: ALTER DATABASE ... SET SINGLE_USER/MULTI_USER, RESTORE (REPLACE)
 -- and RESTORE VERIFYONLY on an existing database.
+--
+-- Why a server role: RESTORE over an EXISTING database is only allowed for
+-- sysadmin, dbcreator, or the database OWNER (dbo). No database-level role
+-- (db_owner included) is enough. Making [admin] the owner would require
+-- dropping the user mapping [3] that the security design requires, so
+-- dbcreator is the smallest permission that works.
+--
+-- Trade-off (accepted for this classroom project): dbcreator lets [admin]
+-- create, alter, drop, or restore ANY database on this instance. In
+-- production, run restores under a dedicated operator login (or a SQL Agent
+-- job) and give the application account only db_backupoperator.
 IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'admin')
     ALTER SERVER ROLE [dbcreator] ADD MEMBER [admin];
 GO
