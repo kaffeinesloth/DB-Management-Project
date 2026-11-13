@@ -11,12 +11,10 @@ scaffold.
 - Database constraints, triggers, reporting views, permissions, sample data,
   contract verification, backup/restore, and smoke tests are available.
 - The desktop program opens a navigation dashboard with placeholder screens.
-- Login, CRUD operations, database connections, reports, and backup controls
-  are **not implemented in the Python interface yet**. Disabled buttons and
-  empty `*_actions.py` files are intentional module boundaries for team work.
-
-No Python screen currently changes the database. `database.py` only declares a
-future shared `pyodbc` connection.
+- The Python login form authenticates valid employees with real SQL Server
+  logins and opens a role-based dashboard for `QUANLY` or `THUTHU`.
+- The remaining feature modules are being implemented independently; consult
+  their screens and action files for their current status.
 
 ## 1. Prerequisites
 
@@ -251,6 +249,50 @@ sql/                       Schema, data, permissions, checks, and maintenance SQ
 docker/                    Initialization, smoke-test, and maintenance helpers
 Additional Info/           Teacher specification and lesson references
 ```
+
+## 10. Login and SSMS classroom demo
+
+Start the database with `docker compose up -d`, then run `python main.py`.
+The login form uses SQL Server Authentication, not a hard-coded Python user
+list. The classroom accounts all use password `123456`:
+
+| Login | Database user | Role | Dashboard access |
+|---|---:|---|---|
+| `admin` | `3` (Lê Mai) | `QUANLY` | All modules, including account administration |
+| `nv_huong` | `1` (Nguyễn Hương) | `THUTHU` | Books, readers, loans, and reports |
+| `nv_long` | `2` (Trần Long) | `THUTHU` | Books, readers, loans, and reports |
+| `nv_nam` | `4` (Phạm Nam) | `THUTHU` | Books, readers, loans, and reports |
+
+Readers in `DOCGIA` are library-card records, not SQL Server or application
+login accounts. New logins can be created only for valid `NHANVIEN` rows.
+
+For the SSMS part of the presentation, connect to `localhost,1433` using SQL
+Server Authentication and one of those accounts. Enable **Trust server
+certificate** in the connection options. Open and execute
+`sql/06_teacher_login_demo.sql`; it displays the server logins, numbered
+database users, role memberships, and the identity of the currently connected
+account.
+
+### Account-management demo
+
+Sign in as `admin`, then open **Quản Lý Tài Khoản**. The table shows every
+valid `NHANVIEN` record and clearly marks whether it already has a SQL account.
+Select an employee marked **Chưa có**, enter a login and a password of at least
+six characters, choose `THUTHU` or `QUANLY`, and click **Tạo tài khoản**.
+
+For deletion, select an employee marked **Đã có** and click **Xóa tài khoản**.
+The active account cannot delete itself; this is enforced both in the UI and
+inside SQL Server. Duplicate employee accounts and duplicate server login names
+are also rejected by the stored procedure.
+
+The create/delete procedures are certificate-signed. Managers receive execute
+permission on those procedures but do not receive general server-wide login
+administration permission.
+
+To add a completely new employee, click **Thêm nhân viên + tài khoản**. Enter
+the employee profile, login, password, and role in the combined form. Saving is
+atomic: the program creates both the `NHANVIEN` row and SQL Server account, or
+rolls back both if any validation or database step fails.
 
 Normal initialization runs these scripts in order:
 

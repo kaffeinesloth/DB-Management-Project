@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# This script is mounted into a Linux container and must use LF line endings.
 
 set -Eeuo pipefail
 
@@ -80,6 +81,17 @@ echo "Running 03_login_and_permissions.sql..."
     -r 1 \
     -v APP_DB_USER="${app_db_user}" APP_DB_PASSWORD="${app_db_password_sql}" \
     -i /docker-init/sql/03_login_and_permissions.sql
+
+echo "Running 04_backup_and_restore.sql (SETUP: backup history view and permissions)..."
+"${sqlcmd}" \
+    -S "${database_host}" \
+    -U sa \
+    -C \
+    -b \
+    -I \
+    -r 1 \
+    -v ACTION=SETUP BACKUP_FILE=LibraryManagement.bak \
+    -i /docker-init/sql/04_backup_and_restore.sql
 
 run_script /docker-init/sql/05_verify_database.sql
 
