@@ -48,21 +48,38 @@ class ReportActions:
         """
         Thống kê tần suất mượn sách theo từng đầu sách (ISBN),
         sắp xếp theo số lượt mượn giảm dần (Được mượn nhiều nhất lên đầu).
+        Tối ưu truy vấn: Gom nhóm trước trên CT_PHIEUMUON và SACH (mỗi bảng chỉ quét 1 lần,
+        không dùng correlated subquery lặp theo từng dòng ISBN).
         """
         query = """
+            WITH CopyLoans AS (
+                SELECT
+                    ct.MASACH,
+                    COUNT(*) AS SoLuotMuonCuon
+                FROM dbo.CT_PHIEUMUON ct
+                GROUP BY ct.MASACH
+            ),
+            SachStats AS (
+                SELECT
+                    s.ISBN,
+                    COUNT(*) AS TongSoCuon,
+                    SUM(CASE WHEN s.CHOMUON = 0 AND s.TINHTRANG = 1 THEN 1 ELSE 0 END) AS SoCuonSanCo,
+                    ISNULL(SUM(cl.SoLuotMuonCuon), 0) AS SoLuotMuon
+                FROM dbo.SACH s
+                LEFT JOIN CopyLoans cl ON cl.MASACH = s.MASACH
+                GROUP BY s.ISBN
+            )
             SELECT 
-                i.ISBN,
+                RTRIM(i.ISBN) AS ISBN,
                 i.TENSACH,
                 ISNULL(tl.THELOAI, N'Chưa phân loại') AS TheLoai,
                 ISNULL(i.GIA, 0) AS GiaBia,
-                (SELECT COUNT(*) FROM dbo.SACH s WHERE s.ISBN = i.ISBN) AS TongSoCuon,
-                (SELECT COUNT(*) FROM dbo.SACH s WHERE s.ISBN = i.ISBN AND s.CHOMUON = 0 AND s.TINHTRANG = 1) AS SoCuonSanCo,
-                COUNT(ct.MASACH) AS SoLuotMuon
+                ISNULL(st.TongSoCuon, 0) AS TongSoCuon,
+                ISNULL(st.SoCuonSanCo, 0) AS SoCuonSanCo,
+                ISNULL(st.SoLuotMuon, 0) AS SoLuotMuon
             FROM dbo.ISBN i
             LEFT JOIN dbo.THELOAI tl ON i.MATL = tl.MATL
-            LEFT JOIN dbo.SACH s ON i.ISBN = s.ISBN
-            LEFT JOIN dbo.CT_PHIEUMUON ct ON s.MASACH = ct.MASACH
-            GROUP BY i.ISBN, i.TENSACH, tl.THELOAI, i.GIA
+            LEFT JOIN SachStats st ON st.ISBN = i.ISBN
             ORDER BY SoLuotMuon DESC, i.TENSACH ASC;
         """
         with get_connection() as conn:
@@ -73,39 +90,29 @@ class ReportActions:
 
     @staticmethod
     def get_tong_quan() -> Dict[str, Any]:
-        """Lấy các chỉ số tổng quan phục vụ Dashboard Thống kê."""
+        """Lấy các chỉ số tổng quan phục vụ Dashboard Thống kê trong 1 truy vấn duy nhất."""
+        query = """
+            SELECT
+                (SELECT COUNT(*) FROM dbo.ISBN) AS TongDauSach,
+                (SELECT COUNT(*) FROM dbo.SACH) AS TongCuonSach,
+                (SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1) AS DangMuon,
+                (SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1) AS DocGiaHoatDong,
+                COUNT(*) AS SoQuaHan,
+                ISNULL(SUM(TienPhatTre), 0) AS TienPhatUocTinh
+            FROM dbo.v_ChiTietPhieuMuon_Phat
+            WHERE TRA = 0 AND SoNgayTre > 0;
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM dbo.ISBN;")
-            tong_isbn = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM dbo.SACH;")
-            tong_sach = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1;")
-            dang_muon = cursor.fetchone()[0]
-
-            cursor.execute("SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1;")
-            tong_docgia = cursor.fetchone()[0]
-
-            # Số sách quá hạn và tổng tiền phạt từ View
-            query_qh = """
-                SELECT COUNT(*), ISNULL(SUM(TienPhatTre), 0)
-                FROM dbo.v_ChiTietPhieuMuon_Phat
-                WHERE TRA = 0 AND SoNgayTre > 0;
-            """
-            cursor.execute(query_qh)
-            row_qh = cursor.fetchone()
-            so_qua_han = row_qh[0] if row_qh else 0
-            tien_phat = row_qh[1] if row_qh else 0
-
+            cursor.execute(query)
+            row = cursor.fetchone()
             return {
-                "TongDauSach": tong_isbn,
-                "TongCuonSach": tong_sach,
-                "DangMuon": dang_muon,
-                "DocGiaHoatDong": tong_docgia,
-                "SoQuaHan": so_qua_han,
-                "TienPhatUocTinh": tien_phat
+                "TongDauSach": row[0] if row else 0,
+                "TongCuonSach": row[1] if row else 0,
+                "DangMuon": row[2] if row else 0,
+                "DocGiaHoatDong": row[3] if row else 0,
+                "SoQuaHan": row[4] if row else 0,
+                "TienPhatUocTinh": row[5] if row else 0,
             }
 
 

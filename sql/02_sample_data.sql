@@ -117,20 +117,41 @@ BEGIN TRY
         SELECT 1 FROM dbo.DOCGIA AS target WHERE target.SOCMND = source.SOCMND
     );
 
-    INSERT INTO dbo.NHANVIEN (HONV, TENNV, GIOITINH, DIACHI, DIENTHOAI, EMAIL)
-    SELECT source.HONV, source.TENNV, source.GIOITINH,
-           source.DIACHI, source.DIENTHOAI, source.EMAIL
-    FROM (VALUES
-        (N'Nguyễn', N'Hương', 0, N'Quận 1, TP.HCM', '0923000001', 'huong.nguyen@library.local'),
-        (N'Trần', N'Long', 1, N'Quận 3, TP.HCM', '0923000002', 'long.tran@library.local'),
-        (N'Lê', N'Mai', 0, N'Quận 5, TP.HCM', '0923000003', 'mai.le@library.local'),
-        (N'Phạm', N'Nam', 1, N'Quận 7, TP.HCM', '0923000004', 'nam.pham@library.local'),
-        (N'Võ', N'Oanh', 0, N'Thủ Đức, TP.HCM', '0923000005', 'oanh.vo@library.local')
-    ) AS source (HONV, TENNV, GIOITINH, DIACHI, DIENTHOAI, EMAIL)
-    WHERE NOT EXISTS
-    (
-        SELECT 1 FROM dbo.NHANVIEN AS target WHERE target.EMAIL = source.EMAIL
+    /* Synchronize canonical employee IDs 1..5 with the logins in 03_login_and_permissions.sql
+       (1=nv_huong, 2=nv_long, 3=admin, 4=nv_nam, 5=no account yet). */
+    DECLARE @SampleEmployees TABLE (
+        ExpectedMANV INT PRIMARY KEY,
+        HONV NVARCHAR(50),
+        TENNV NVARCHAR(12),
+        GIOITINH BIT,
+        DIACHI NVARCHAR(100),
+        DIENTHOAI VARCHAR(11),
+        EMAIL VARCHAR(50)
     );
+    INSERT INTO @SampleEmployees (ExpectedMANV, HONV, TENNV, GIOITINH, DIACHI, DIENTHOAI, EMAIL)
+    VALUES
+        (1, N'Nguyễn', N'Hương', 0, N'Quận 1, TP.HCM', '0923000001', 'huong.nguyen@library.local'),
+        (2, N'Trần',   N'Long',  1, N'Quận 3, TP.HCM', '0923000002', 'long.tran@library.local'),
+        (3, N'Lê',     N'Mai',   0, N'Quận 5, TP.HCM', '0923000003', 'mai.le@library.local'),
+        (4, N'Phạm',   N'Nam',   1, N'Quận 7, TP.HCM', '0923000004', 'nam.pham@library.local'),
+        (5, N'Võ',     N'Oanh',  0, N'Thủ Đức, TP.HCM', '0923000005', 'oanh.vo@library.local');
+
+    UPDATE target
+    SET target.HONV = src.HONV,
+        target.TENNV = src.TENNV,
+        target.GIOITINH = src.GIOITINH,
+        target.DIACHI = src.DIACHI,
+        target.DIENTHOAI = src.DIENTHOAI,
+        target.EMAIL = src.EMAIL
+    FROM dbo.NHANVIEN AS target
+    INNER JOIN @SampleEmployees AS src ON target.MANV = src.ExpectedMANV;
+
+    INSERT INTO dbo.NHANVIEN (HONV, TENNV, GIOITINH, DIACHI, DIENTHOAI, EMAIL)
+    SELECT src.HONV, src.TENNV, src.GIOITINH, src.DIACHI, src.DIENTHOAI, src.EMAIL
+    FROM @SampleEmployees AS src
+    WHERE NOT EXISTS (SELECT 1 FROM dbo.NHANVIEN AS target WHERE target.MANV = src.ExpectedMANV)
+      AND NOT EXISTS (SELECT 1 FROM dbo.NHANVIEN AS target WHERE target.EMAIL = src.EMAIL)
+    ORDER BY src.ExpectedMANV;
 
     INSERT INTO dbo.ISBN
     (

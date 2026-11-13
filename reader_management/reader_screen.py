@@ -1,616 +1,442 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-import customtkinter as ctk
-import ctk_patch
+"""Reader (library card) management screen.
+
+State machine (ui_state.FormStateController):
+    VIEW : all inputs LOCKED; Thêm / Sửa / Xóa / Thoát ON; Ghi / Phục hồi OFF.
+           Selecting a row shows it in the locked form.
+    ADD  : inputs unlocked & cleared, focus "Họ đệm"; MADG shows "(tự động)" (IDENTITY).
+    EDIT : inputs unlocked EXCEPT the primary key MADG and the card term.
+    Ghi  : INSERT / UPDATE via parameterized queries -> reload grid -> back to VIEW.
+    Phục hồi: discard changes, show the selected row's original data, back to VIEW.
+    Xóa  : confirmation dialog, deletes immediately; FK error 547 -> friendly message.
+"""
+
 from datetime import datetime
-from typing import Optional, Dict, Any
-from reader_management.reader_actions import ReaderActions, DocGiaDAO
+from tkinter import messagebox, ttk
+from typing import Any, Dict, Optional
+
+import customtkinter as ctk
+
+import ctk_patch  # noqa: F401  (placeholder fix for CTkEntry)
 from database import CURRENT_SESSION
+from reader_management.reader_actions import DocGiaDAO
+from ui_state import FormMode, FormStateController, build_command_bar, confirm_exit
+
+AUTO_ID = "(tự động)"
+DURATIONS = {"6 tháng": 6, "12 tháng (1 năm)": 12, "24 tháng (2 năm)": 24, "36 tháng (3 năm)": 36}
 
 
 class ReaderScreen(ctk.CTkFrame):
-    """
-    Giao diện Quản lý Độc giả (Thẻ thư viện):
-    - Hiển thị danh sách độc giả dạng bảng (ttk.Treeview chuẩn Dark Mode đồng bộ).
-    - Phân biệt trạng thái: Hoạt động | Quá hạn | Đã khóa.
-    - Tìm kiếm theo mã thẻ, Họ tên, CMND, SĐT, Email.
-    - Form cấp thẻ mới chống tràn layout, tự động validate dữ liệu.
-    - Gia hạn, Khóa / Mở thẻ và cấp lại thẻ bị mất trong một giao dịch.
-    """
+    """Danh sách độc giả + form Thêm / Sửa / Xóa / Ghi / Phục hồi."""
 
     def __init__(self, master, current_user: Optional[Dict[str, Any]] = None):
         super().__init__(master, fg_color="transparent")
         self.current_user = current_user or CURRENT_SESSION.get("user_info") or {}
-        self.editing_madg: Optional[int] = None
-
+        self.records: Dict[str, Dict[str, Any]] = {}
         self.setup_ui()
         self.load_data()
 
+    # ------------------------------------------------------------------ UI
     def setup_ui(self):
-        # Cột 0 (Bảng dữ liệu): Co giãn linh hoạt (weight=1)
-        # Cột 1 (Form thao tác): Chiều rộng cố định 350px (weight=0) để không bao giờ bị cắt chữ
         self.grid_columnconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=0)
         self.grid_rowconfigure(0, weight=1)
-
+        self.create_right_panel()      # form first: the command bar needs its widgets
         self.create_left_panel()
-        self.create_right_panel()
+        self.state.to_view()
 
     def create_left_panel(self):
-        left_frame = ctk.CTkFrame(self, corner_radius=12)
-        left_frame.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew")
-        left_frame.grid_rowconfigure(2, weight=1)
-        left_frame.grid_columnconfigure(0, weight=1)
+        left = ctk.CTkFrame(self, corner_radius=12)
+        left.grid(row=0, column=0, padx=(10, 5), pady=10, sticky="nsew")
+        left.grid_rowconfigure(2, weight=1)
+        left.grid_columnconfigure(0, weight=1)
 
-        # 1. Header & Bộ đếm
-        header_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        header_frame.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
-
-        lbl_title = ctk.CTkLabel(
-            header_frame, 
-            text="DANH SÁCH ĐỘC GIẢ THƯ VIỆN", 
-            font=ctk.CTkFont(size=18, weight="bold")
-        )
-        lbl_title.pack(side="left")
-
-        self.lbl_count = ctk.CTkLabel(
-            header_frame, 
-            text="Tổng: 0 độc giả", 
-            font=ctk.CTkFont(size=13),
-            text_color="#9CA3AF"
-        )
+        header = ctk.CTkFrame(left, fg_color="transparent")
+        header.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
+        ctk.CTkLabel(header, text="DANH SÁCH ĐỘC GIẢ THƯ VIỆN",
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(side="left")
+        self.lbl_count = ctk.CTkLabel(header, text="Tổng: 0 độc giả", font=ctk.CTkFont(size=13),
+                                      text_color="#9CA3AF")
         self.lbl_count.pack(side="right")
 
-        # 2. Thanh tìm kiếm
-        search_frame = ctk.CTkFrame(left_frame, fg_color="transparent")
-        search_frame.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="ew")
-        search_frame.grid_columnconfigure(0, weight=1)
-
-        self.txt_search = ctk.CTkEntry(
-            search_frame, 
-            placeholder_text="Nhập Mã ĐG, Tên, CMND/CCCD, SĐT hoặc Email...",
-            height=36
-        )
+        search = ctk.CTkFrame(left, fg_color="transparent")
+        search.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="ew")
+        search.grid_columnconfigure(0, weight=1)
+        self.txt_search = ctk.CTkEntry(search, height=36,
+                                       placeholder_text="Nhập Mã ĐG, Tên, CMND/CCCD, SĐT hoặc Email...")
         self.txt_search.grid(row=0, column=0, padx=(0, 10), sticky="ew")
         self.txt_search.bind("<Return>", lambda e: self.handle_search())
+        self.btn_search = ctk.CTkButton(search, text="Tìm kiếm", width=90, height=36,
+                                        command=self.handle_search)
+        self.btn_search.grid(row=0, column=1, padx=(0, 6))
+        self.btn_refresh = ctk.CTkButton(search, text="Làm mới", width=80, height=36,
+                                         fg_color="#4B5563", hover_color="#374151",
+                                         command=self.load_data)
+        self.btn_refresh.grid(row=0, column=2)
 
-        btn_search = ctk.CTkButton(
-            search_frame, 
-            text="Tìm kiếm", 
-            width=90, 
-            height=36,
-            command=self.handle_search
-        )
-        btn_search.grid(row=0, column=1, padx=(0, 6))
+        tree_box = ctk.CTkFrame(left, fg_color="#1E2229", corner_radius=8)
+        tree_box.grid(row=2, column=0, padx=15, pady=(0, 10), sticky="nsew")
+        tree_box.grid_rowconfigure(0, weight=1)
+        tree_box.grid_columnconfigure(0, weight=1)
+        self._apply_tree_style()
 
-        btn_refresh = ctk.CTkButton(
-            search_frame, 
-            text="Làm mới", 
-            width=80, 
-            height=36,
-            fg_color="#4B5563",
-            hover_color="#374151",
-            command=self.load_data
-        )
-        btn_refresh.grid(row=0, column=2)
-
-        # 3. Bảng Treeview (Cấu hình chuẩn Dark Mode)
-        tree_container = ctk.CTkFrame(left_frame, fg_color="#1E2229", corner_radius=8)
-        tree_container.grid(row=2, column=0, padx=15, pady=(0, 10), sticky="nsew")
-        tree_container.grid_rowconfigure(0, weight=1)
-        tree_container.grid_columnconfigure(0, weight=1)
-
-        # Áp dụng Dark theme đồng bộ cho toàn bộ Treeview
-        self.style = ttk.Style()
-        self.style.theme_use("clam")
-        
-        self.style.configure(
-            "Treeview",
-            background="#1E2229",
-            foreground="#F3F4F6",
-            fieldbackground="#1E2229",
-            rowheight=30,
-            borderwidth=0,
-            relief="flat",
-            font=("Segoe UI", 10)
-        )
-        self.style.map(
-            "Treeview", 
-            background=[("selected", "#2563EB")],
-            foreground=[("selected", "#FFFFFF")],
-            fieldbackground=[("!disabled", "#1E2229"), ("disabled", "#1E2229")]
-        )
-        self.style.configure(
-            "Treeview.Heading",
-            background="#111827",
-            foreground="#F9FAFB",
-            relief="flat",
-            borderwidth=0,
-            font=("Segoe UI", 10, "bold"),
-            padding=(5, 6)
-        )
-        self.style.map(
-            "Treeview.Heading",
-            background=[("active", "#1F2937"), ("!active", "#111827")],
-            foreground=[("active", "#FFFFFF"), ("!active", "#F9FAFB")]
-        )
-
-        columns = (
-            "MADG", "HoTen", "SOCMND", "GIOITINH", 
-            "DIENTHOAI", "EMAILDG", "NGAYLAMTHE", "NGAYHETHAN", "HOATDONG"
-        )
-
-        self.tree = ttk.Treeview(
-            tree_container, 
-            columns=columns, 
-            show="headings", 
-            selectmode="browse"
-        )
-
-        # Cấu hình kích thước cột tối ưu để không bị cuộn ngang
-        col_configs = {
-            "MADG": ("Mã ĐG", 55, "center"),
-            "HoTen": ("Họ và Tên", 135, "w"),
-            "SOCMND": ("Số CMND/CCCD", 105, "center"),
-            "GIOITINH": ("Giới tính", 65, "center"),
-            "DIENTHOAI": ("Điện thoại", 95, "center"),
-            "EMAILDG": ("Email", 135, "w"),
-            "NGAYLAMTHE": ("Ngày làm thẻ", 88, "center"),
-            "NGAYHETHAN": ("Ngày hết hạn", 88, "center"),
+        columns = ("MADG", "HoTen", "SOCMND", "GIOITINH", "DIENTHOAI", "EMAILDG",
+                   "NGAYLAMTHE", "NGAYHETHAN", "HOATDONG")
+        self.tree = ttk.Treeview(tree_box, columns=columns, show="headings", selectmode="browse")
+        for col, (heading, width, align) in {
+            "MADG": ("Mã ĐG", 55, "center"), "HoTen": ("Họ và Tên", 135, "w"),
+            "SOCMND": ("Số CMND/CCCD", 105, "center"), "GIOITINH": ("Giới tính", 65, "center"),
+            "DIENTHOAI": ("Điện thoại", 95, "center"), "EMAILDG": ("Email", 135, "w"),
+            "NGAYLAMTHE": ("Ngày làm thẻ", 88, "center"), "NGAYHETHAN": ("Ngày hết hạn", 88, "center"),
             "HOATDONG": ("Trạng thái", 100, "center"),
-        }
-
-        for col, (heading, width, align) in col_configs.items():
+        }.items():
             self.tree.heading(col, text=heading, anchor=align)
             self.tree.column(col, width=width, minwidth=40, anchor=align)
-
-        # Màu nền xen kẽ & Trạng thái (Luôn có background tối, không bao giờ bị trắng)
         self.tree.tag_configure("oddrow", background="#1E2229", foreground="#F3F4F6")
         self.tree.tag_configure("evenrow", background="#242830", foreground="#F3F4F6")
         self.tree.tag_configure("locked", background="#382226", foreground="#F87171")
         self.tree.tag_configure("expired", background="#383020", foreground="#FBBF24")
-
-        # Scrollbars
-        vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(tree_container, orient="horizontal", command=self.tree.xview)
+        vsb = ttk.Scrollbar(tree_box, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tree_box, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
         self.tree.grid(row=0, column=0, sticky="nsew")
-        self.tree.bind("<Double-1>", lambda event: self.handle_edit_reader())
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
-        # 4. Thanh thao tác nhanh dưới bảng
-        action_bar = ctk.CTkFrame(left_frame, fg_color="transparent")
-        action_bar.grid(row=3, column=0, padx=15, pady=(0, 15), sticky="ew")
+        # Standard command bar: Thêm / Sửa / Xóa / Ghi / Phục hồi / Thoát
+        command_bar = ctk.CTkFrame(left, fg_color="transparent")
+        command_bar.grid(row=3, column=0, padx=15, pady=(0, 6), sticky="ew")
+        self.buttons = build_command_bar(command_bar, {
+            "add": self.on_add, "edit": self.on_edit, "delete": self.on_delete,
+            "save": self.on_save, "cancel": self.on_cancel, "exit": lambda: confirm_exit(self),
+        })
 
-        self.btn_edit = ctk.CTkButton(
-            action_bar,
-            text="Sửa thông tin",
-            fg_color="#2563EB",
-            hover_color="#1D4ED8",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_edit_reader
-        )
-        self.btn_edit.pack(side="left", padx=(0, 10))
-
-        self.btn_extend = ctk.CTkButton(
-            action_bar, 
-            text="Gia hạn thẻ (+12 tháng)", 
-            fg_color="#059669", 
-            hover_color="#047857",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_extend_card
-        )
-        self.btn_extend.pack(side="left", padx=(0, 10))
-
-        self.btn_toggle_status = ctk.CTkButton(
-            action_bar, 
-            text="Khóa / Mở thẻ", 
-            fg_color="#D97706", 
-            hover_color="#B45309",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_toggle_status
-        )
-        self.btn_toggle_status.pack(side="left", padx=(0, 10))
-
-        self.btn_replace = ctk.CTkButton(
-            action_bar,
-            text="Cấp lại thẻ mất",
-            fg_color="#DC2626",
-            hover_color="#B91C1C",
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_replace_lost_card
-        )
+        # Card-specific business actions (usable only while viewing)
+        actions = ctk.CTkFrame(left, fg_color="transparent")
+        actions.grid(row=4, column=0, padx=15, pady=(0, 15), sticky="ew")
+        self.btn_extend = ctk.CTkButton(actions, text="Gia hạn thẻ (+12 tháng)", fg_color="#059669",
+                                        hover_color="#047857", command=self.handle_extend_card)
+        self.btn_extend.pack(side="left", padx=(0, 8))
+        self.btn_toggle_status = ctk.CTkButton(actions, text="Khóa / Mở thẻ", fg_color="#B45309",
+                                               hover_color="#92400E", command=self.handle_toggle_status)
+        self.btn_toggle_status.pack(side="left", padx=(0, 8))
+        self.btn_replace = ctk.CTkButton(actions, text="Cấp lại thẻ mất", fg_color="#9F1239",
+                                         hover_color="#881337", command=self.handle_replace_lost_card)
         self.btn_replace.pack(side="left")
 
+        self.state.buttons = self.buttons
+        self.state.view_only_widgets = [self.btn_extend, self.btn_toggle_status, self.btn_replace,
+                                        self.btn_search, self.btn_refresh, self.txt_search]
+
+    def _apply_tree_style(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background="#1E2229", foreground="#F3F4F6",
+                        fieldbackground="#1E2229", rowheight=30, borderwidth=0, relief="flat",
+                        font=("Segoe UI", 10))
+        style.map("Treeview", background=[("selected", "#2563EB")], foreground=[("selected", "#FFFFFF")],
+                  fieldbackground=[("!disabled", "#1E2229"), ("disabled", "#1E2229")])
+        style.configure("Treeview.Heading", background="#111827", foreground="#F9FAFB", relief="flat",
+                        borderwidth=0, font=("Segoe UI", 10, "bold"), padding=(5, 6))
+        style.map("Treeview.Heading", background=[("active", "#1F2937"), ("!active", "#111827")],
+                  foreground=[("active", "#FFFFFF"), ("!active", "#F9FAFB")])
+
     def create_right_panel(self):
-        # Chiều rộng cố định 340px chống tràn giao diện
-        right_frame = ctk.CTkScrollableFrame(self, width=340, corner_radius=12)
-        right_frame.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
+        right = ctk.CTkScrollableFrame(self, width=340, corner_radius=12)
+        right.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
 
-        self.lbl_form_title = ctk.CTkLabel(
-            right_frame, 
-            text="CẤP THẺ ĐỘC GIẢ MỚI", 
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        self.lbl_form_title.pack(pady=(15, 12), anchor="w")
+        self.lbl_form_title = ctk.CTkLabel(right, text="THÔNG TIN ĐỘC GIẢ",
+                                           font=ctk.CTkFont(size=16, weight="bold"))
+        self.lbl_form_title.pack(pady=(15, 4), anchor="w")
+        self.lbl_mode = ctk.CTkLabel(right, text="", font=ctk.CTkFont(size=12), anchor="w",
+                                     justify="left", wraplength=320)
+        self.lbl_mode.pack(anchor="w", pady=(0, 8))
 
-        self.fields = {}
+        self.fields: Dict[str, Any] = {}
 
-        # 1. Họ đệm
-        lbl_ho = ctk.CTkLabel(right_frame, text="Họ đệm *", font=ctk.CTkFont(size=12))
-        lbl_ho.pack(anchor="w")
-        self.fields["HODG"] = ctk.CTkEntry(right_frame, placeholder_text="Ví dụ: Nguyễn Văn", height=35)
-        self.fields["HODG"].pack(fill="x", pady=(2, 6))
+        def entry(key: str, label: str, placeholder: str = ""):
+            ctk.CTkLabel(right, text=label, font=ctk.CTkFont(size=12)).pack(anchor="w")
+            self.fields[key] = ctk.CTkEntry(right, placeholder_text=placeholder, height=34)
+            self.fields[key].pack(fill="x", pady=(2, 6))
 
-        # 2. Tên gọi
-        lbl_ten = ctk.CTkLabel(right_frame, text="Tên độc giả *", font=ctk.CTkFont(size=12))
-        lbl_ten.pack(anchor="w")
-        self.fields["TENDG"] = ctk.CTkEntry(right_frame, placeholder_text="Ví dụ: An", height=35)
-        self.fields["TENDG"].pack(fill="x", pady=(2, 6))
+        entry("MADG", "Mã độc giả (khóa chính)")
+        entry("HODG", "Họ đệm *", "Ví dụ: Nguyễn Văn")
+        entry("TENDG", "Tên độc giả *", "Ví dụ: An")
+        entry("SOCMND", "Số CMND / CCCD *", "9 hoặc 12 chữ số")
 
-        # 3. Số CMND / CCCD
-        lbl_cmnd = ctk.CTkLabel(right_frame, text="Số CMND / CCCD *", font=ctk.CTkFont(size=12))
-        lbl_cmnd.pack(anchor="w")
-        self.fields["SOCMND"] = ctk.CTkEntry(right_frame, placeholder_text="9 hoặc 12 chữ số", height=35)
-        self.fields["SOCMND"].pack(fill="x", pady=(2, 6))
-
-        # 4. Giới tính & Ngày sinh
-        row_gender_birth = ctk.CTkFrame(right_frame, fg_color="transparent")
-        row_gender_birth.pack(fill="x", pady=2)
-        row_gender_birth.grid_columnconfigure(0, weight=1)
-        row_gender_birth.grid_columnconfigure(1, weight=2)
-
-        lbl_gt = ctk.CTkLabel(row_gender_birth, text="Giới tính", font=ctk.CTkFont(size=12))
-        lbl_gt.grid(row=0, column=0, sticky="w")
-        self.cb_gender = ctk.CTkComboBox(row_gender_birth, values=["Nam", "Nữ"], height=35, width=90)
-        self.cb_gender.set("Nam")
-        self.cb_gender.grid(row=1, column=0, padx=(0, 6), sticky="ew")
-
-        lbl_ns = ctk.CTkLabel(row_gender_birth, text="Ngày sinh", font=ctk.CTkFont(size=12))
-        lbl_ns.grid(row=0, column=1, sticky="w")
-        self.fields["NGAYSINH"] = ctk.CTkEntry(row_gender_birth, placeholder_text="DD/MM/YYYY (VD: 15/05/2002)", height=35)
+        row = ctk.CTkFrame(right, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        row.grid_columnconfigure(0, weight=1)
+        row.grid_columnconfigure(1, weight=2)
+        ctk.CTkLabel(row, text="Giới tính", font=ctk.CTkFont(size=12)).grid(row=0, column=0, sticky="w")
+        self.fields["GIOITINH"] = ctk.CTkComboBox(row, values=["Nam", "Nữ"], height=34, width=90)
+        self.fields["GIOITINH"].grid(row=1, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkLabel(row, text="Ngày sinh (dd/MM/yyyy)", font=ctk.CTkFont(size=12)).grid(
+            row=0, column=1, sticky="w")
+        self.fields["NGAYSINH"] = ctk.CTkEntry(row, placeholder_text="VD: 15/05/2002", height=34)
         self.fields["NGAYSINH"].grid(row=1, column=1, sticky="ew")
 
-        # 5. Số điện thoại
-        lbl_dt = ctk.CTkLabel(right_frame, text="Số điện thoại", font=ctk.CTkFont(size=12))
-        lbl_dt.pack(anchor="w", pady=(6, 0))
-        self.fields["DIENTHOAI"] = ctk.CTkEntry(right_frame, placeholder_text="Ví dụ: 0912345678", height=35)
-        self.fields["DIENTHOAI"].pack(fill="x", pady=(2, 6))
+        ctk.CTkLabel(right, text="", height=4).pack()
+        entry("DIENTHOAI", "Số điện thoại", "Ví dụ: 0912345678")
+        entry("EMAILDG", "Địa chỉ Email", "Ví dụ: docgia@gmail.com")
+        entry("DIACHI", "Địa chỉ liên hệ", "Số nhà, đường, quận/huyện...")
 
-        # 6. Địa chỉ Email
-        lbl_email = ctk.CTkLabel(right_frame, text="Địa chỉ Email", font=ctk.CTkFont(size=12))
-        lbl_email.pack(anchor="w")
-        self.fields["EMAILDG"] = ctk.CTkEntry(right_frame, placeholder_text="Ví dụ: docgia@gmail.com", height=35)
-        self.fields["EMAILDG"].pack(fill="x", pady=(2, 6))
+        ctk.CTkLabel(right, text="Thời hạn thẻ (chỉ khi cấp mới)", font=ctk.CTkFont(size=12)).pack(anchor="w")
+        self.fields["THOIHAN"] = ctk.CTkComboBox(right, values=list(DURATIONS), height=34)
+        self.fields["THOIHAN"].pack(fill="x", pady=(2, 10))
 
-        # 7. Địa chỉ liên hệ
-        lbl_dc = ctk.CTkLabel(right_frame, text="Địa chỉ liên hệ", font=ctk.CTkFont(size=12))
-        lbl_dc.pack(anchor="w")
-        self.fields["DIACHI"] = ctk.CTkEntry(right_frame, placeholder_text="Số nhà, đường, quận/huyện...", height=35)
-        self.fields["DIACHI"].pack(fill="x", pady=(2, 6))
+        ctk.CTkLabel(right, justify="left", text_color="#9CA3AF", font=ctk.CTkFont(size=11),
+                     text="Quy định:\n- Ngày làm thẻ tự động lấy ngày hiện tại.\n"
+                          "- Độc giả được mượn tối đa 3 cuốn sách.\n- Thời hạn mượn 30 ngày/lần.").pack(
+            anchor="w", pady=(0, 15))
 
-        # 8. Thời hạn cấp thẻ
-        lbl_han = ctk.CTkLabel(right_frame, text="Thời hạn thẻ", font=ctk.CTkFont(size=12))
-        lbl_han.pack(anchor="w")
-        self.cb_duration = ctk.CTkComboBox(
-            right_frame, 
-            values=["6 tháng", "12 tháng (1 năm)", "24 tháng (2 năm)", "36 tháng (3 năm)"],
-            height=35
+        self.state = FormStateController(
+            inputs=self.fields,
+            buttons={},                        # filled in create_left_panel
+            key_fields=("MADG", "THOIHAN"),    # PK + card term cannot change when editing
+            locked_always=("MADG",),           # IDENTITY: never typed by the user
+            defaults={"MADG": AUTO_ID, "GIOITINH": "Nam", "THOIHAN": "12 tháng (1 năm)"},
+            on_mode_change=self._on_mode_change,
         )
-        self.cb_duration.set("12 tháng (1 năm)")
-        self.cb_duration.pack(fill="x", pady=(2, 12))
 
-        # Ghi chú quy tắc
-        lbl_note = ctk.CTkLabel(
-            right_frame,
-            text="Quy định:\n- Ngày làm thẻ tự động lấy ngày hiện tại.\n- Độc giả được mượn tối đa 3 cuốn sách.\n- Thời hạn mượn 30 ngày/lần.",
-            font=ctk.CTkFont(size=11),
-            text_color="#9CA3AF",
-            justify="left"
-        )
-        lbl_note.pack(anchor="w", pady=(0, 15))
+    def _on_mode_change(self, mode: FormMode) -> None:
+        # The grid is frozen while adding/editing so the form cannot jump to another row.
+        self.tree.configure(selectmode="browse" if mode is FormMode.VIEW else "none")
+        self.lbl_mode.configure(**{
+            FormMode.VIEW: {"text": "Chế độ xem — chọn một dòng để xem chi tiết.", "text_color": "#9CA3AF"},
+            FormMode.ADD: {"text": "ĐANG THÊM độc giả mới — Ghi để lưu, Phục hồi để hủy.",
+                           "text_color": "#60A5FA"},
+            FormMode.EDIT: {"text": "ĐANG SỬA — mã độc giả (khóa chính) bị khóa. Ghi để lưu, "
+                                    "Phục hồi để hủy.", "text_color": "#A78BFA"},
+        }[mode])
 
-        # Nút hành động
-        self.btn_submit = ctk.CTkButton(
-            right_frame, 
-            text="Xác Nhận Cấp Thẻ", 
-            height=40, 
-            font=ctk.CTkFont(weight="bold"),
-            command=self.handle_add_docgia
-        )
-        self.btn_submit.pack(fill="x", pady=(0, 8))
-
-        btn_clear = ctk.CTkButton(
-            right_frame, 
-            text="Làm Mới Form", 
-            height=35, 
-            fg_color="#4B5563", 
-            hover_color="#374151",
-            command=self.clear_form
-        )
-        btn_clear.pack(fill="x", pady=(0, 15))
-
+    # ---------------------------------------------------------------- data
     def load_data(self):
-        """Tải toàn bộ dữ liệu độc giả vào bảng."""
+        """Reload all readers (also used after every successful Ghi / Xóa)."""
         try:
-            records = DocGiaDAO.get_all()
-            self.display_records(records)
+            self.display_records(DocGiaDAO.get_all())
             self.txt_search.delete(0, "end")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách độc giả:\n{ex}")
+        except ValueError as error:
+            messagebox.showwarning("Cảnh báo", str(error))
+        except Exception as error:
+            messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách độc giả:\n{error}")
 
     def display_records(self, records):
-        """Xóa dữ liệu cũ và hiển thị các dòng mới lên bảng với định dạng trực quan."""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
+        self.tree.delete(*self.tree.get_children())
+        self.records.clear()
         today = datetime.now().date()
-
         for idx, r in enumerate(records):
-            gender_str = "Nam" if r.get("GIOITINH") == 1 else "Nữ"
-            hoten = f"{r.get('HODG', '')} {r.get('TENDG', '')}".strip()
-            ngayhethan_str = r.get("NgayHetHan") or ""
-            is_active = r.get("HOATDONG") == 1
-
-            # Xác định trạng thái chi tiết
-            is_expired = False
-            if ngayhethan_str:
+            iid = str(r.get("MADG"))
+            if self.tree.exists(iid):
+                continue
+            expiry = r.get("NgayHetHan") or ""
+            expired = False
+            if expiry:
                 try:
-                    exp_date = datetime.strptime(ngayhethan_str, "%d/%m/%Y").date()
-                    if exp_date < today:
-                        is_expired = True
+                    expired = datetime.strptime(expiry, "%d/%m/%Y").date() < today
                 except ValueError:
-                    pass
-
-            if not is_active:
-                status_str = "Đã khóa"
-                tag = "locked"
-            elif is_expired:
-                status_str = "Quá hạn"
-                tag = "expired"
+                    expired = False
+            if r.get("HOATDONG") != 1:
+                status, tag = "Đã khóa", "locked"
+            elif expired:
+                status, tag = "Quá hạn", "expired"
             else:
-                status_str = "Hoạt động"
-                tag = "oddrow" if idx % 2 != 0 else "evenrow"
-
-            self.tree.insert("", "end", values=(
-                r.get("MADG"),
-                hoten,
-                r.get("SOCMND") or "",
-                gender_str,
-                r.get("DIENTHOAI") or "",
-                r.get("EMAILDG") or "",
-                r.get("NgayLamThe") or "",
-                ngayhethan_str,
-                status_str
-            ), tags=(tag,))
-
-        self.lbl_count.configure(text=f"Tổng: {len(records)} độc giả")
+                status, tag = "Hoạt động", ("oddrow" if idx % 2 else "evenrow")
+            self.records[iid] = r
+            self.tree.insert("", "end", iid=iid, tags=(tag,), values=(
+                r.get("MADG"), f"{r.get('HODG', '')} {r.get('TENDG', '')}".strip(),
+                r.get("SOCMND") or "", "Nam" if r.get("GIOITINH") == 1 else "Nữ",
+                r.get("DIENTHOAI") or "", r.get("EMAILDG") or "", r.get("NgayLamThe") or "",
+                expiry, status,
+            ))
+        self.lbl_count.configure(text=f"Tổng: {len(self.records)} độc giả")
+        self.state.clear()
+        self.state.to_view()
 
     def handle_search(self):
-        """Tìm kiếm dữ liệu theo từ khóa."""
         keyword = self.txt_search.get().strip()
         if not keyword:
             self.load_data()
             return
-
         try:
-            records = DocGiaDAO.search(keyword)
-            self.display_records(records)
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi tìm kiếm", str(ex))
+            self.display_records(DocGiaDAO.search(keyword))
+        except ValueError as error:
+            messagebox.showwarning("Cảnh báo", str(error))
+        except Exception as error:
+            messagebox.showerror("Lỗi tìm kiếm", str(error))
 
-    def _read_personal_form(self):
-        """Read and parse the personal-information fields shared by create and edit."""
-        birth_text = self.fields["NGAYSINH"].get().strip()
+    def _selected(self) -> Optional[Dict[str, Any]]:
+        selection = self.tree.selection()
+        return self.records.get(selection[0]) if selection else None
+
+    def _record_to_form(self, r: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "MADG": r.get("MADG"), "HODG": r.get("HODG"), "TENDG": r.get("TENDG"),
+            "SOCMND": r.get("SOCMND"), "GIOITINH": "Nam" if r.get("GIOITINH") == 1 else "Nữ",
+            "NGAYSINH": r.get("NgaySinh") or "", "DIENTHOAI": r.get("DIENTHOAI"),
+            "EMAILDG": r.get("EMAILDG"), "DIACHI": r.get("DIACHI"), "THOIHAN": "",
+        }
+
+    def _on_select(self, _event=None):
+        if self.state.is_editing:
+            return
+        record = self._selected()
+        if record:
+            self.state.fill(self._record_to_form(record))
+
+    def _read_form(self) -> Dict[str, Any]:
+        """Collect form values (already strip()-ed by the controller) for the DAO."""
+        values = self.state.values()
+        birth_text = values["NGAYSINH"]
         try:
             birth_date = datetime.strptime(birth_text, "%d/%m/%Y") if birth_text else None
         except ValueError as error:
-            raise ValueError("Ngày sinh phải theo định dạng DD/MM/YYYY!") from error
+            raise ValueError("Ngày sinh phải theo định dạng dd/MM/yyyy (VD: 15/05/2002)!") from error
         return {
-            "HODG": self.fields["HODG"].get(),
-            "TENDG": self.fields["TENDG"].get(),
-            "SOCMND": self.fields["SOCMND"].get(),
-            "GIOITINH": 1 if self.cb_gender.get() == "Nam" else 0,
-            "NGAYSINH": birth_date,
-            "DIENTHOAI": self.fields["DIENTHOAI"].get(),
-            "EMAILDG": self.fields["EMAILDG"].get(),
-            "DIACHI": self.fields["DIACHI"].get(),
+            "HODG": values["HODG"], "TENDG": values["TENDG"], "SOCMND": values["SOCMND"],
+            "GIOITINH": 1 if values["GIOITINH"] == "Nam" else 0, "NGAYSINH": birth_date,
+            "DIENTHOAI": values["DIENTHOAI"], "EMAILDG": values["EMAILDG"], "DIACHI": values["DIACHI"],
         }
 
-    def handle_edit_reader(self):
-        """Load the selected active reader into the form for a protected update."""
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Chưa chọn", "Vui lòng chọn độc giả cần sửa thông tin!")
-            return
+    # ------------------------------------------------------------ commands
+    def on_add(self):
+        self.state.to_add()
 
-        values = self.tree.item(selected[0])["values"]
-        madg, current_status = int(values[0]), values[8]
-        if current_status == "Đã khóa":
-            messagebox.showwarning(
-                "Dữ liệu lịch sử",
-                "Không thể sửa thẻ đã khóa. Hãy chọn thẻ đang hoạt động của độc giả."
-            )
+    def on_edit(self):
+        record = self._selected()
+        if not record:
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn độc giả cần sửa!")
             return
+        if record.get("HOATDONG") != 1:
+            messagebox.showwarning("Dữ liệu lịch sử",
+                                   "Không thể sửa thẻ đã khóa. Hãy chọn thẻ đang hoạt động của độc giả.")
+            return
+        self.state.to_edit()
 
+    def on_save(self):
+        """'Ghi': INSERT (Thêm) or UPDATE (Sửa), then reload and lock the form."""
         try:
-            reader = DocGiaDAO.get_by_id(madg)
-            if not reader:
-                raise ValueError(f"Không tìm thấy thẻ độc giả mã {madg}!")
-            if not reader.get("HOATDONG"):
-                raise ValueError("Thẻ vừa bị khóa; vui lòng làm mới danh sách!")
-
-            self.clear_form()
-            self.editing_madg = madg
-            for field_name in ("HODG", "TENDG", "SOCMND", "DIENTHOAI", "EMAILDG", "DIACHI"):
-                value = reader.get(field_name)
-                if value is not None:
-                    self.fields[field_name].insert(0, str(value))
-            birth_date = reader.get("NGAYSINH")
-            if birth_date:
-                self.fields["NGAYSINH"].insert(0, birth_date.strftime("%d/%m/%Y"))
-            self.cb_gender.set("Nam" if reader.get("GIOITINH") == 1 else "Nữ")
-            self.cb_duration.configure(state="disabled")
-            self.lbl_form_title.configure(text=f"CẬP NHẬT ĐỘC GIẢ - MÃ {madg}")
-            self.btn_submit.configure(
-                text="Lưu Cập Nhật",
-                command=self.handle_update_docgia,
-                fg_color="#059669",
-                hover_color="#047857"
-            )
-            self.fields["HODG"].focus_set()
-        except ValueError as error:
-            messagebox.showwarning("Không thể cập nhật", str(error))
-        except Exception as error:
-            messagebox.showerror("Lỗi CSDL", f"Không thể tải thông tin độc giả:\n{error}")
-
-    def handle_update_docgia(self):
-        """Save editable personal details without changing card-history fields."""
-        if self.editing_madg is None:
-            messagebox.showwarning("Chưa chọn", "Vui lòng chọn độc giả cần cập nhật!")
-            return
-
-        try:
-            reader_data = self._read_personal_form()
-            confirmed = messagebox.askyesno(
-                "Xác nhận cập nhật",
-                f"Lưu thay đổi thông tin cho thẻ độc giả mã {self.editing_madg}?\n\n"
-                "Mã thẻ, ngày làm thẻ, ngày hết hạn và trạng thái sẽ không bị thay đổi."
-            )
-            if not confirmed:
+            data = self._read_form()
+            if self.state.mode is FormMode.ADD:
+                months = DURATIONS.get(self.state.values()["THOIHAN"], 12)
+                issue = datetime.now()
+                data = DocGiaDAO.validate_reader_data({
+                    **data, "NGAYLAMTHE": issue,
+                    "NGAYHETHAN": DocGiaDAO.add_months(issue, months), "HOATDONG": 1,
+                })
+                if DocGiaDAO.check_cmnd_exists(data["SOCMND"]):
+                    raise ValueError("CMND/CCCD này đã có một thẻ đang hoạt động!")
+                if data["EMAILDG"] and DocGiaDAO.check_email_exists(data["EMAILDG"]):
+                    raise ValueError("Email này đã được đăng ký cho một thẻ đang hoạt động!")
+                new_id = DocGiaDAO.insert(data)
+                message, select_id = f"Đã cấp thẻ mới, mã độc giả: {new_id}.", new_id
+            elif self.state.mode is FormMode.EDIT:
+                madg = int(self.state.values()["MADG"])
+                DocGiaDAO.update(madg, data)
+                message, select_id = f"Đã cập nhật độc giả mã {madg}.", madg
+            else:
                 return
-
-            updated = DocGiaDAO.update(self.editing_madg, reader_data)
-            if not updated:
-                raise ValueError("Không có dữ liệu nào được cập nhật!")
-            messagebox.showinfo(
-                "Cập nhật thành công",
-                f"Đã cập nhật thông tin độc giả mã {self.editing_madg}."
-            )
-            self.clear_form()
-            self.load_data()
         except ValueError as error:
-            messagebox.showwarning("Dữ liệu không hợp lệ", str(error))
+            messagebox.showwarning("Dữ liệu không hợp lệ", str(error))   # form stays open
+            return
         except PermissionError as error:
             messagebox.showerror("Không đủ quyền", str(error))
+            return
         except Exception as error:
-            messagebox.showerror("Lỗi CSDL", f"Không thể cập nhật độc giả:\n{error}")
+            messagebox.showerror("Lỗi CSDL", f"Không thể ghi độc giả:\n{error}")
+            return
+        messagebox.showinfo("Thành công", message)
+        self.load_data()                       # reload grid -> VIEW state, inputs locked
+        self._select_id(select_id)
 
-    def handle_add_docgia(self):
-        """Validate the form and issue a new library card."""
+    def on_cancel(self):
+        """'Phục hồi': drop pending changes and show the selected row again."""
+        self.state.cancel()
+        self._on_select()
+
+    def on_delete(self):
+        record = self._selected()
+        if not record:
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn độc giả cần xóa!")
+            return
+        name = f"{record.get('HODG', '')} {record.get('TENDG', '')}".strip()
+        if not messagebox.askyesno(
+            "Xác nhận xóa",
+            f"Bạn có chắc chắn muốn xóa bản ghi này không?\n\nĐộc giả: {name} (Mã: {record['MADG']})",
+            icon="warning",
+        ):
+            return
         try:
-            personal_data = self._read_personal_form()
-            duration_months = {
-                "6 tháng": 6,
-                "12 tháng (1 năm)": 12,
-                "24 tháng (2 năm)": 24,
-                "36 tháng (3 năm)": 36,
-            }.get(self.cb_duration.get(), 12)
-            issue_date = datetime.now()
-            reader_data = DocGiaDAO.validate_reader_data({
-                **personal_data,
-                "NGAYLAMTHE": issue_date,
-                "NGAYHETHAN": DocGiaDAO.add_months(issue_date, duration_months),
-                "HOATDONG": 1,
-            })
-
-            if DocGiaDAO.check_cmnd_exists(reader_data["SOCMND"]):
-                raise ValueError("CMND/CCCD này đã có một thẻ đang hoạt động!")
-            if reader_data["EMAILDG"] and DocGiaDAO.check_email_exists(reader_data["EMAILDG"]):
-                raise ValueError("Email này đã được đăng ký cho một thẻ đang hoạt động!")
-
-            new_id = DocGiaDAO.insert(reader_data)
-            messagebox.showinfo(
-                "Thành công",
-                f"Đã cấp thẻ cho {reader_data['HODG']} {reader_data['TENDG']}.\n"
-                f"Mã độc giả mới: {new_id}"
-            )
-            self.clear_form()
-            self.load_data()
-        except ValueError as error:
-            messagebox.showwarning("Dữ liệu không hợp lệ", str(error))
+            DocGiaDAO.delete(record["MADG"])   # deletes immediately, no extra Ghi
+        except ValueError as error:            # includes FK 547 -> friendly message
+            messagebox.showerror("Không thể xóa", str(error))
+            return
         except PermissionError as error:
             messagebox.showerror("Không đủ quyền", str(error))
+            return
         except Exception as error:
-            messagebox.showerror("Lỗi CSDL", f"Không thể cấp thẻ độc giả:\n{error}")
+            messagebox.showerror("Lỗi CSDL", f"Không thể xóa độc giả:\n{error}")
+            return
+        messagebox.showinfo("Thành công", f"Đã xóa độc giả '{name}'.")
+        self.load_data()
+
+    def _select_id(self, madg: Any) -> None:
+        iid = str(madg)
+        if self.tree.exists(iid):
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+
+    # ---------------------------------------------------- card operations
+    def _selected_active(self, action: str) -> Optional[Dict[str, Any]]:
+        record = self._selected()
+        if not record:
+            messagebox.showwarning("Chưa chọn", f"Vui lòng chọn một độc giả trên bảng để {action}!")
+            return None
+        return record
 
     def handle_extend_card(self):
-        """Gia hạn thẻ thêm 12 tháng cho độc giả đang chọn."""
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Chưa chọn", "Vui lòng chọn một độc giả trên bảng để gia hạn thẻ!")
+        record = self._selected_active("gia hạn thẻ")
+        if not record:
             return
-
-        item = self.tree.item(selected[0])
-        madg = item["values"][0]
-        hoten = item["values"][1]
-        current_status = item["values"][8]
-
-        if current_status == "Đã khóa":
-            messagebox.showwarning(
-                "Thẻ đã khóa",
-                "Không thể gia hạn một thẻ đã khóa. Hãy chọn thẻ đang hoạt động của độc giả."
-            )
+        if record.get("HOATDONG") != 1:
+            messagebox.showwarning("Thẻ đã khóa", "Không thể gia hạn một thẻ đã khóa.")
             return
-
-        confirm = messagebox.askyesno(
-            "Xác nhận", 
-            f"Bạn có chắc muốn gia hạn thêm 12 tháng cho thẻ độc giả '{hoten}' (Mã: {madg})?"
-        )
-        if not confirm:
+        name = f"{record['HODG']} {record['TENDG']}"
+        if not messagebox.askyesno("Xác nhận",
+                                   f"Gia hạn thêm 12 tháng cho thẻ '{name}' (Mã: {record['MADG']})?"):
             return
-
         try:
-            success = DocGiaDAO.gia_han_the(madg, so_thang=12)
-            if success:
-                messagebox.showinfo("Thành công", f"Gia hạn thẻ cho '{hoten}' thành công!")
+            if DocGiaDAO.gia_han_the(record["MADG"], so_thang=12):
+                messagebox.showinfo("Thành công", f"Gia hạn thẻ cho '{name}' thành công!")
                 self.load_data()
+                self._select_id(record["MADG"])
             else:
                 messagebox.showerror("Thất bại", "Không tìm thấy thông tin để cập nhật!")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi CSDL", str(ex))
+        except ValueError as error:
+            messagebox.showwarning("Cảnh báo", str(error))
+        except Exception as error:
+            messagebox.showerror("Lỗi CSDL", str(error))
 
     def handle_replace_lost_card(self):
-        """Lock the selected lost card and issue a new card atomically."""
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Chưa chọn", "Vui lòng chọn thẻ bị mất cần cấp lại!")
+        record = self._selected_active("cấp lại thẻ")
+        if not record:
             return
-
-        item = self.tree.item(selected[0])
-        values = item["values"]
-        old_madg, hoten, current_status = values[0], values[1], values[8]
-        if current_status == "Đã khóa":
-            messagebox.showwarning(
-                "Thẻ đã khóa",
-                "Thẻ này đã bị khóa và không thể cấp lại lần nữa. Hãy chọn thẻ đang hoạt động."
-            )
+        if record.get("HOATDONG") != 1:
+            messagebox.showwarning("Thẻ đã khóa", "Thẻ này đã bị khóa và không thể cấp lại lần nữa.")
             return
-
-        confirmed = messagebox.askyesno(
+        name = f"{record['HODG']} {record['TENDG']}"
+        if not messagebox.askyesno(
             "Xác nhận cấp lại thẻ mất",
-            f"Cấp lại thẻ cho '{hoten}' (mã cũ: {old_madg})?\n\n"
-            "Thẻ cũ sẽ bị khóa, một mã độc giả mới sẽ được tạo và lịch sử cũ vẫn được giữ. "
-            "Các sách chưa trả trên thẻ cũ vẫn được tính vào giới hạn 3 cuốn."
-        )
-        if not confirmed:
+            f"Cấp lại thẻ cho '{name}' (mã cũ: {record['MADG']})?\n\n"
+            "Thẻ cũ sẽ bị khóa, một mã độc giả mới sẽ được tạo và lịch sử cũ vẫn được giữ.",
+        ):
             return
-
         try:
-            new_madg = DocGiaDAO.cap_lai_the_mat(old_madg, so_thang=12)
-            messagebox.showinfo(
-                "Cấp lại thẻ thành công",
-                f"Đã khóa thẻ cũ {old_madg} và cấp thẻ mới {new_madg} cho '{hoten}'."
-            )
+            new_madg = DocGiaDAO.cap_lai_the_mat(record["MADG"], so_thang=12)
+            messagebox.showinfo("Cấp lại thẻ thành công",
+                                f"Đã khóa thẻ cũ {record['MADG']} và cấp thẻ mới {new_madg} cho '{name}'.")
             self.load_data()
+            self._select_id(new_madg)
         except ValueError as error:
             messagebox.showwarning("Không thể cấp lại thẻ", str(error))
         except PermissionError as error:
@@ -619,56 +445,31 @@ class ReaderScreen(ctk.CTkFrame):
             messagebox.showerror("Lỗi CSDL", f"Không thể cấp lại thẻ:\n{error}")
 
     def handle_toggle_status(self):
-        """Chuyển đổi trạng thái thẻ Hoạt động <-> Đã khóa."""
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Chưa chọn", "Vui lòng chọn một độc giả trên bảng để thay đổi trạng thái!")
+        record = self._selected_active("thay đổi trạng thái")
+        if not record:
             return
-
-        item = self.tree.item(selected[0])
-        madg = item["values"][0]
-        hoten = item["values"][1]
-        current_status = item["values"][8]
-
-        is_currently_active = "Hoạt động" in current_status or "Quá hạn" in current_status
-        new_status = not is_currently_active
-        action_name = "KÍCH HOẠT" if new_status else "KHÓA"
-
-        confirm = messagebox.askyesno(
-            "Xác nhận", 
-            f"Bạn có muốn {action_name} thẻ độc giả '{hoten}' (Mã: {madg})?"
-        )
-        if not confirm:
+        new_status = record.get("HOATDONG") != 1
+        action = "KÍCH HOẠT" if new_status else "KHÓA"
+        name = f"{record['HODG']} {record['TENDG']}"
+        if not messagebox.askyesno("Xác nhận", f"Bạn có muốn {action} thẻ độc giả '{name}' "
+                                               f"(Mã: {record['MADG']})?"):
             return
-
         try:
-            success = DocGiaDAO.toggle_trang_thai(madg, new_status)
-            if success:
-                messagebox.showinfo("Thành công", f"Đã {action_name.lower()} thẻ thành công!")
+            if DocGiaDAO.toggle_trang_thai(record["MADG"], new_status):
+                messagebox.showinfo("Thành công", f"Đã {action.lower()} thẻ thành công!")
                 self.load_data()
+                self._select_id(record["MADG"])
             else:
                 messagebox.showerror("Thất bại", "Cập nhật trạng thái không thành công!")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi CSDL", str(ex))
+        except ValueError as error:
+            messagebox.showwarning("Cảnh báo", str(error))
+        except Exception as error:
+            messagebox.showerror("Lỗi CSDL", str(error))
 
     def clear_form(self):
-        """Xóa trắng các ô nhập trên form và khôi phục placeholder."""
-        self.editing_madg = None
-        self.focus_set()
-        for field in self.fields.values():
-            field.delete(0, "end")
-        self.cb_gender.set("Nam")
-        self.cb_duration.configure(state="normal")
-        self.cb_duration.set("12 tháng (1 năm)")
-        self.lbl_form_title.configure(text="CẤP THẺ ĐỘC GIẢ MỚI")
-        self.btn_submit.configure(
-            text="Xác Nhận Cấp Thẻ",
-            command=self.handle_add_docgia,
-            fg_color="#3B8ED0",
-            hover_color="#36719F"
-        )
+        """Backward-compatible helper: empty the form and return to VIEW."""
+        self.state.clear()
+        self.state.to_view()
 
 
 # Bí danh tương thích

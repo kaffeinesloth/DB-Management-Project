@@ -167,9 +167,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'THUTHU' AND t
     CREATE ROLE THUTHU;
 
 -- 2. Permissions
-GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON SCHEMA::dbo TO QUANLY;
+GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON SCHEMA::dbo TO QUANLY;
+GRANT VIEW DEFINITION TO QUANLY;
 
-GRANT SELECT, INSERT, UPDATE ON dbo.DOCGIA TO THUTHU;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.DOCGIA TO THUTHU;
 GRANT SELECT, INSERT, UPDATE ON dbo.PHIEUMUON TO THUTHU;
 GRANT SELECT, INSERT, UPDATE ON dbo.CT_PHIEUMUON TO THUTHU;
 GRANT SELECT, UPDATE ON dbo.SACH TO THUTHU;
@@ -607,5 +608,141 @@ ADD SIGNATURE TO OBJECT::dbo.sp_XoaTaiKhoanNhanVien
 
 GRANT EXECUTE ON dbo.sp_TaoTaiKhoanNhanVien TO QUANLY;
 GRANT EXECUTE ON dbo.sp_TaoNhanVienVaTaiKhoan TO QUANLY;
-GRANT EXECUTE ON dbo.sp_XoaTaiKhoanNhanVien TO QUANLY;
+GRANT EXECUTE ON dbo.sp_XoaTaiKhoanNhanVien TO QUANLY;
+GO
+
+/* ------------------------------------------------------------------
+   Password & Role Management Stored Procedures
+   ------------------------------------------------------------------ */
+CREATE OR ALTER PROCEDURE dbo.sp_DoiMatKhau
+    @OldPassword NVARCHAR(128),
+    @NewPassword NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @LoginName SYSNAME = ORIGINAL_LOGIN();
+    DECLARE @Sql NVARCHAR(MAX);
+
+    IF @OldPassword IS NULL OR @OldPassword = N''
+        THROW 51031, N'Vui lòng nhập mật khẩu cũ.', 1;
+    IF @NewPassword IS NULL OR LEN(@NewPassword) < 6
+        THROW 51032, N'Mật khẩu mới phải có ít nhất 6 ký tự.', 1;
+    IF @NewPassword = @OldPassword
+        THROW 51033, N'Mật khẩu mới phải khác mật khẩu cũ.', 1;
+
+    SET @Sql = N'ALTER LOGIN ' + QUOTENAME(@LoginName)
+             + N' WITH PASSWORD = N' + QUOTENAME(@NewPassword, '''')
+             + N' OLD_PASSWORD = N' + QUOTENAME(@OldPassword, '''') + N';';
+
+    BEGIN TRY
+        EXEC sys.sp_executesql @Sql;
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() IN (15151, 15114)
+            THROW 51034, N'Mật khẩu cũ không đúng.', 1;
+        THROW;
+    END CATCH;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.sp_ResetMatKhauNhanVien
+    @MANV INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DatabaseUser SYSNAME = CONVERT(NVARCHAR(20), @MANV);
+    DECLARE @LoginName SYSNAME;
+    DECLARE @Sql NVARCHAR(MAX);
+
+    IF @MANV IS NULL OR @MANV <= 0 OR NOT EXISTS (SELECT 1 FROM dbo.NHANVIEN WHERE MANV = @MANV)
+        THROW 51041, N'Mã nhân viên không hợp lệ.', 1;
+
+    SELECT @LoginName = SUSER_SNAME(sid)
+    FROM sys.database_principals
+    WHERE name = @DatabaseUser AND type = 'S';
+
+    IF @LoginName IS NULL
+        THROW 51042, N'Nhân viên này chưa có tài khoản.', 1;
+    IF @LoginName = ORIGINAL_LOGIN()
+        THROW 51043, N'Không thể reset mật khẩu của chính mình. Hãy dùng chức năng Đổi mật khẩu.', 1;
+
+    SET @Sql = N'ALTER LOGIN ' + QUOTENAME(@LoginName)
+             + N' WITH PASSWORD = N''123456'', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF;';
+    EXEC sys.sp_executesql @Sql;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE dbo.sp_DoiNhomQuyenTaiKhoan
+    @MANV INT,
+    @RoleName SYSNAME
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @DatabaseUser SYSNAME = CONVERT(NVARCHAR(20), @MANV);
+    DECLARE @LoginName SYSNAME;
+    DECLARE @OldRole SYSNAME;
+    DECLARE @Sql NVARCHAR(MAX);
+
+    SET @RoleName = UPPER(NULLIF(LTRIM(RTRIM(@RoleName)), N''));
+
+    IF @RoleName IS NULL OR @RoleName NOT IN (N'QUANLY', N'THUTHU')
+        THROW 51051, N'Nhóm quyền chỉ có thể là QUANLY hoặc THUTHU.', 1;
+
+    SELECT @LoginName = SUSER_SNAME(sid)
+    FROM sys.database_principals
+    WHERE name = @DatabaseUser AND type = 'S';
+
+    IF @LoginName IS NULL
+        THROW 51052, N'Nhân viên này chưa có tài khoản.', 1;
+    IF @LoginName = ORIGINAL_LOGIN()
+        THROW 51053, N'Không thể tự đổi nhóm quyền của chính mình.', 1;
+
+    SELECT TOP (1) @OldRole = role_dp.name
+    FROM sys.database_role_members AS drm
+    JOIN sys.database_principals AS member_dp ON member_dp.principal_id = drm.member_principal_id
+    JOIN sys.database_principals AS role_dp ON role_dp.principal_id = drm.role_principal_id
+    WHERE member_dp.name = @DatabaseUser
+      AND role_dp.name IN (N'QUANLY', N'THUTHU');
+
+    IF @OldRole = @RoleName
+        RETURN;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        IF @OldRole IS NOT NULL
+        BEGIN
+            SET @Sql = N'ALTER ROLE ' + QUOTENAME(@OldRole)
+                     + N' DROP MEMBER ' + QUOTENAME(@DatabaseUser) + N';';
+            EXEC sys.sp_executesql @Sql;
+        END;
+        SET @Sql = N'ALTER ROLE ' + QUOTENAME(@RoleName)
+                 + N' ADD MEMBER ' + QUOTENAME(@DatabaseUser) + N';';
+        EXEC sys.sp_executesql @Sql;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+END;
+GO
+
+IF EXISTS (SELECT 1 FROM sys.crypt_properties WHERE major_id = OBJECT_ID(N'dbo.sp_ResetMatKhauNhanVien'))
+    DROP SIGNATURE FROM OBJECT::dbo.sp_ResetMatKhauNhanVien BY CERTIFICATE QLTV_AccountAdminCertificate;
+ADD SIGNATURE TO OBJECT::dbo.sp_ResetMatKhauNhanVien
+    BY CERTIFICATE QLTV_AccountAdminCertificate WITH PASSWORD = 'QLTV-Cert-2026!';
+
+IF EXISTS (SELECT 1 FROM sys.crypt_properties WHERE major_id = OBJECT_ID(N'dbo.sp_DoiNhomQuyenTaiKhoan'))
+    DROP SIGNATURE FROM OBJECT::dbo.sp_DoiNhomQuyenTaiKhoan BY CERTIFICATE QLTV_AccountAdminCertificate;
+ADD SIGNATURE TO OBJECT::dbo.sp_DoiNhomQuyenTaiKhoan
+    BY CERTIFICATE QLTV_AccountAdminCertificate WITH PASSWORD = 'QLTV-Cert-2026!';
+GO
+
+GRANT EXECUTE ON dbo.sp_DoiMatKhau TO QUANLY, THUTHU;
+GRANT EXECUTE ON dbo.sp_ResetMatKhauNhanVien TO QUANLY;
+GRANT EXECUTE ON dbo.sp_DoiNhomQuyenTaiKhoan TO QUANLY;
 GO

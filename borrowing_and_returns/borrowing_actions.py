@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from database import get_connection
+from database import get_connection, friendly_message
 from reader_management.reader_actions import ReaderActions, DocGiaDAO
 from book_management.book_actions import BookActions, SachDAO
 
@@ -127,9 +127,15 @@ class MuonTraDAO:
 
                 conn.commit()
                 return maphieu
+            except ValueError:
+                conn.rollback()
+                raise
             except Exception as e:
                 conn.rollback()
-                raise RuntimeError(f"Lỗi khi lập phiếu mượn: {e}")
+                msg = friendly_message(e, "phiếu mượn")
+                if msg:
+                    raise ValueError(msg) from e
+                raise RuntimeError(f"Lỗi khi lập phiếu mượn: {e}") from e
 
     @staticmethod
     def tinh_toan_phi_phat(maphieu: int, masach: str, tinh_trang_tra: int, bi_mat: bool = False) -> Dict[str, Any]:
@@ -228,9 +234,15 @@ class MuonTraDAO:
 
                 conn.commit()
                 return phi_phat
+            except ValueError:
+                conn.rollback()
+                raise
             except Exception as e:
                 conn.rollback()
-                raise RuntimeError(f"Lỗi khi ghi nhận trả sách: {e}")
+                msg = friendly_message(e, "trả sách")
+                if msg:
+                    raise ValueError(msg) from e
+                raise RuntimeError(f"Lỗi khi ghi nhận trả sách: {e}") from e
 
     @staticmethod
     def get_chi_tiet_phieu_gom_nhom(maphieu: int) -> List[Dict[str, Any]]:
@@ -352,9 +364,15 @@ class MuonTraDAO:
                     "TienPhatHong": tong_tien_phat_hong,
                     "TongPhat": tong_phat
                 }
+            except ValueError:
+                conn.rollback()
+                raise
             except Exception as e:
                 conn.rollback()
-                raise RuntimeError(f"Lỗi khi ghi nhận trả sách gom nhóm: {e}")
+                msg = friendly_message(e, "trả sách")
+                if msg:
+                    raise ValueError(msg) from e
+                raise RuntimeError(f"Lỗi khi ghi nhận trả sách gom nhóm: {e}") from e
 
 
 

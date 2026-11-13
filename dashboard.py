@@ -33,18 +33,17 @@ class MainDashboard(ctk.CTk):
         hoten = self.current_user.get("HoTen", "Nhân viên")
         vaitro = self.current_user.get("VaiTro", "Thủ thư")
         self.title(f"Hệ Thống Quản Lý Thư Viện (QLTV) - {hoten} [{vaitro}]")
-        self.geometry("1260x740")
-        self.minsize(1100, 660)
-
         # Căn giữa màn hình
         self.center_window()
 
-        # Layout chính: Cột 0 (Sidebar điều hướng), Cột 1 (Khu vực nội dung Tab)
+        # Layout chính: Cột 0 (Sidebar điều hướng), Cột 1 (Khu vực nội dung Tab),
+        # Hàng 1: thanh trạng thái (StatusStrip) trải hết chiều ngang.
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         self.create_sidebar()
         self.create_content_area()
+        self.create_status_bar()
 
         # Mặc định mở Tab Sách
         self.select_tab("sach")
@@ -70,11 +69,19 @@ class MainDashboard(ctk.CTk):
         self.destroy()
 
     def center_window(self):
+        """Fit the window inside the usable screen so the bottom StatusStrip is never hidden.
+
+        On a 1366x768 laptop, 740px + title bar + taskbar exceeds the screen and the
+        taskbar would cover the status bar.
+        """
         self.update_idletasks()
-        width = 1260
-        height = 740
-        x = (self.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.winfo_screenheight() // 2) - (height // 2)
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        reserved = 40 + 32 + 8          # taskbar + title bar + margin
+        width = min(1260, screen_w - 20)
+        height = min(740, screen_h - reserved)
+        self.minsize(min(1100, width), min(620, height))
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - reserved - height) // 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
 
     def create_sidebar(self):
@@ -125,11 +132,11 @@ class MainDashboard(ctk.CTk):
         )
         lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
 
-        role_name = (self.current_user.get('RoleName') or 'QUANLY').upper()
-        role_color = "#10B981" if "QUANLY" in role_name else "#60A5FA"
+        role_name = self.role_name
+        role_color = "#10B981" if role_name == "QUANLY" else "#60A5FA"
         lbl_role = ctk.CTkLabel(
-            profile_frame, 
-            text=f"Quyền: {self.current_user.get('RoleName', 'QUANLY')}", 
+            profile_frame,
+            text=f"Quyền: {role_name}",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=role_color
         )
@@ -138,14 +145,14 @@ class MainDashboard(ctk.CTk):
         # Các nút chuyển Tab điều hướng theo phân quyền
         self.nav_buttons = {}
 
-        if "THUTHU" in role_name:
+        if role_name != "QUANLY":       # fail-closed: anything not QUANLY gets the THUTHU menu
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
                 ("muontra", "Mượn / Trả Sách"),
                 ("thongke", "Báo Cáo Thống Kê")
             ]
-        else:  # QUANLY hoặc ADMIN
+        else:  # QUANLY
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
@@ -170,6 +177,18 @@ class MainDashboard(ctk.CTk):
             btn.grid(row=idx, column=0, padx=15, pady=4, sticky="ew")
             self.nav_buttons[tab_id] = btn
 
+        # Đổi mật khẩu của chính mình (mọi nhóm quyền)
+        btn_password = ctk.CTkButton(
+            self.sidebar,
+            text="Đổi Mật Khẩu",
+            height=36,
+            fg_color="#0E7490",
+            hover_color="#155E75",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.open_change_password
+        )
+        btn_password.grid(row=10, column=0, padx=15, pady=(10, 0), sticky="ew")
+
         # Nút Đăng Xuất ở góc dưới
         btn_logout = ctk.CTkButton(
             self.sidebar,
@@ -180,7 +199,37 @@ class MainDashboard(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self.handle_logout
         )
-        btn_logout.grid(row=10, column=0, padx=15, pady=(10, 20), sticky="ew")
+        btn_logout.grid(row=11, column=0, padx=15, pady=(8, 20), sticky="ew")
+
+    @property
+    def role_name(self) -> str:
+        """Normalized role; an unknown/missing role is treated as THUTHU (least privilege)."""
+        role = str(self.current_user.get("RoleName") or "").strip().upper()
+        return "QUANLY" if role == "QUANLY" else "THUTHU"
+
+    def create_status_bar(self):
+        """StatusStrip ở đáy cửa sổ: Mã NV | Họ tên | Nhóm quyền | Login | CSDL."""
+        bar = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color=("#CBD5E1", "#111827"))
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        items = (
+            f"Mã NV: {self.current_user.get('MANV', 'N/A')}",
+            f"Họ tên: {self.current_user.get('HoTen', 'N/A')}",
+            f"Nhóm quyền: {self.role_name} ({'Quản lý' if self.role_name == 'QUANLY' else 'Thủ thư'})",
+            f"Đăng nhập: {self.current_user.get('LoginName', 'N/A')}",
+            f"CSDL: {CURRENT_SESSION.get('active_db')} @ {CURRENT_SESSION.get('active_server')}",
+        )
+        self.status_labels = []
+        for idx, text in enumerate(items):
+            if idx:
+                ctk.CTkLabel(bar, text="|", text_color="gray").pack(side="left", padx=2)
+            label = ctk.CTkLabel(bar, text=text, font=ctk.CTkFont(size=12),
+                                 text_color=("gray10", "gray85"))
+            label.pack(side="left", padx=(12 if idx == 0 else 6, 6), pady=2)
+            self.status_labels.append(label)
+
+    def open_change_password(self):
+        from account_management.account_screen import ChangePasswordDialog
+        ChangePasswordDialog(self, self.current_user.get("LoginName", ""))
 
     def create_content_area(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -188,9 +237,7 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        role_name = (self.current_user.get("RoleName") or "QUANLY").upper()
-
-        if "THUTHU" in role_name:
+        if self.role_name != "QUANLY":
             self.views = {
                 "sach": BookScreen(self.main_container, self.current_user),
                 "docgia": ReaderScreen(self.main_container, self.current_user),

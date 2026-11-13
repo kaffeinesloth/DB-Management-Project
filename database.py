@@ -5,11 +5,16 @@ lẫn CSDL container Docker (LibraryManagement).
 """
 
 import os
-from typing import Optional, Dict, Any
+import re
+from typing import Optional, Dict, Any, Set
 import pyodbc
 
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Tắt connection pooling để phiên TCP của SQL Login đóng ngay lập tức khi đăng xuất / kết thúc truy vấn,
+# tránh giữ zombie session trong sys.dm_exec_sessions làm kẹt sp_XoaTaiKhoanNhanVien (lỗi 51014).
+pyodbc.pooling = False
 
 # Tải cấu hình từ file .env nếu có
 _env_path = Path(__file__).resolve().parent / ".env"
@@ -31,12 +36,55 @@ CURRENT_SESSION: Dict[str, Any] = {
 }
 
 # Tương thích với khai báo trên nhánh main
-connection: pyodbc.Connection | None = None
+connection: Any = None
+_ACTIVE_CONNECTIONS: Set["ManagedConnection"] = set()
+
+
+class ManagedConnection:
+    """Bọc pyodbc.Connection để tự động gọi close() khi thoát khối `with`.
+
+    Trong pyodbc chuẩn, `with conn:` chỉ commit/rollback chứ KHÔNG gọi `conn.close()`,
+    khiến phiên TCP vẫn mở trên SQL Server sau khi đăng xuất.
+    """
+
+    def __init__(self, raw_conn: pyodbc.Connection) -> None:
+        object.__setattr__(self, "_raw_conn", raw_conn)
+        object.__setattr__(self, "_closed", False)
+        _ACTIVE_CONNECTIONS.add(self)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._raw_conn, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._raw_conn, name, value)
+
+    def __enter__(self) -> "ManagedConnection":
+        self._raw_conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        try:
+            return self._raw_conn.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        _ACTIVE_CONNECTIONS.discard(self)
+        if not self._closed:
+            object.__setattr__(self, "_closed", True)
+            try:
+                self._raw_conn.close()
+            except pyodbc.Error:
+                pass
 
 
 def clear_session() -> None:
-    """Close the shared connection and remove credentials from memory."""
+    """Đóng toàn bộ kết nối đang mở và xóa thông tin phiên làm việc khỏi bộ nhớ."""
     global connection
+    for active_conn in list(_ACTIVE_CONNECTIONS):
+        active_conn.close()
+    _ACTIVE_CONNECTIONS.clear()
+
     if connection is not None:
         try:
             connection.close()
@@ -53,22 +101,32 @@ def clear_session() -> None:
     })
 
 
+def odbc_quote(value: str) -> str:
+    """Quote one ODBC connection-string value: {value} with '}' doubled.
+
+    Without quoting, a password such as ``x;Trusted_Connection=yes`` would add a
+    new attribute to the connection string (connection-string injection) and
+    could switch the login to Windows authentication.
+    """
+    return "{" + str(value).replace("}", "}}") + "}"
+
+
 def build_connection_string(
-    uid: str, 
-    pwd: str, 
+    uid: str,
+    pwd: str,
     driver: str = "ODBC Driver 18 for SQL Server",
     server: Optional[str] = None,
     database: Optional[str] = None
 ) -> str:
-    """Tạo chuỗi kết nối SQL Server Authentication."""
+    """Tạo chuỗi kết nối SQL Server Authentication (mọi giá trị đều được quote an toàn)."""
     srv = server or CURRENT_SESSION.get("active_server") or SERVER_NAME
     db = database or CURRENT_SESSION.get("active_db") or DATABASE_NAME
     return (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={srv};"
-        f"DATABASE={db};"
-        f"UID={uid};"
-        f"PWD={pwd};"
+        f"DRIVER={odbc_quote(driver)};"
+        f"SERVER={odbc_quote(srv)};"
+        f"DATABASE={odbc_quote(db)};"
+        f"UID={odbc_quote(uid)};"
+        f"PWD={odbc_quote(pwd)};"
         "TrustServerCertificate=yes;"
     )
 
@@ -103,7 +161,7 @@ def get_connection(
     for driver in drivers:
         try:
             conn_str = build_connection_string(user_id, password, driver, target_srv, target_db)
-            conn = pyodbc.connect(conn_str, timeout=3)
+            conn = ManagedConnection(pyodbc.connect(conn_str, timeout=3))
             global connection
             connection = conn
             return conn
@@ -232,3 +290,56 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
 # Hàm tương thích ngược
 def kiem_tra_dang_nhap(username: str, password: str) -> Dict[str, Any]:
     return dang_nhap_he_thong(username, password)
+
+
+# ---------------------------------------------------------------------------
+# Phân tích mã lỗi gốc SQL Server (native error codes) sang thông báo tiếng Việt
+# ---------------------------------------------------------------------------
+FK_VIOLATION = 547          # INSERT/UPDATE/DELETE conflicted with a FOREIGN KEY / CHECK
+UNIQUE_INDEX = 2601         # duplicate key row in a unique index
+PRIMARY_KEY = 2627          # violation of PRIMARY KEY / UNIQUE constraint
+TRUNCATION = (2628, 8152)   # string or binary data would be truncated
+PERMISSION_DENIED = 229     # SELECT/INSERT/... permission was denied
+
+FK_DELETE_MESSAGE = (
+    "Không thể xóa vì dữ liệu này đã phát sinh giao dịch liên quan trong hệ thống!"
+)
+
+_CODE_PATTERN = re.compile(r"\((\d{3,6})\)")
+
+
+def sql_error_codes(error: BaseException) -> Set[int]:
+    """Return every SQL Server native error number found in ``error``."""
+    return {int(code) for code in _CODE_PATTERN.findall(str(error))}
+
+
+def has_error_code(error: BaseException, *codes: int) -> bool:
+    return bool(sql_error_codes(error).intersection(codes))
+
+
+def is_fk_violation(error: BaseException) -> bool:
+    """True when the statement was rejected by a FOREIGN KEY (error 547)."""
+    return has_error_code(error, FK_VIOLATION)
+
+
+def server_message(error: BaseException) -> str:
+    """Text SQL Server raised (e.g. a THROW from a stored procedure), without driver noise."""
+    text = str(error)
+    marker = "[SQL Server]"
+    if marker in text:
+        text = text.rsplit(marker, 1)[1]
+    text = re.sub(r"\s*\(\d{3,6}\)\s*(\(SQL\w+\))?[\"')]*\s*$", "", text)
+    return text.strip().strip("'\"").strip()
+
+
+def friendly_message(error: BaseException, entity: str = "dữ liệu") -> Optional[str]:
+    """Return a Vietnamese explanation for well-known SQL Server errors, else None."""
+    if is_fk_violation(error):
+        return FK_DELETE_MESSAGE
+    if has_error_code(error, PRIMARY_KEY, UNIQUE_INDEX):
+        return f"Mã {entity} đã tồn tại trong hệ thống. Vui lòng nhập mã khác!"
+    if has_error_code(error, *TRUNCATION):
+        return "Một trường dữ liệu vượt quá độ dài cho phép của cơ sở dữ liệu!"
+    if has_error_code(error, PERMISSION_DENIED):
+        return "Tài khoản hiện tại không có quyền thực hiện thao tác này!"
+    return None
