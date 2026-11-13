@@ -299,6 +299,7 @@ BEGIN
     INNER JOIN sys.database_principals r ON rm.role_principal_id = r.principal_id
     INNER JOIN sys.database_principals u ON rm.member_principal_id = u.principal_id
     WHERE u.name = @DBUserName
+      AND r.name IN (N'QUANLY', N'THUTHU')
     ORDER BY CASE 
         WHEN r.name = 'QUANLY' THEN 1 
         WHEN r.name = 'THUTHU' THEN 2 
@@ -306,16 +307,10 @@ BEGIN
 
     DECLARE @MANV INT = TRY_CAST(@DBUserName AS INT);
 
-    IF @MANV IS NULL
-    BEGIN
-        SELECT TOP 1 @MANV = MANV FROM dbo.NHANVIEN WHERE EMAIL LIKE @LoginName + '%';
-        IF @MANV IS NULL SET @MANV = 1;
-    END;
-
     SELECT 
         @LoginName AS LoginName,
         @DBUserName AS UserName,
-        ISNULL(@RoleName, N'THUTHU') AS RoleName,
+        @RoleName AS RoleName,
         nv.MANV,
         RTRIM(nv.HONV) + ' ' + RTRIM(nv.TENNV) AS HoTen,
         ISNULL(nv.EMAIL, 'N/A') AS Email,
@@ -324,7 +319,9 @@ BEGIN
             ELSE N'Thủ thư' 
         END AS VaiTro
     FROM dbo.NHANVIEN nv
-    WHERE nv.MANV = @MANV;
+    WHERE nv.MANV = @MANV
+      AND @DBUserName = CONVERT(NVARCHAR(20), nv.MANV)
+      AND @RoleName IN (N'QUANLY', N'THUTHU');
 END;
 GO
 
@@ -343,7 +340,7 @@ GRANT EXECUTE ON dbo.sp_LayThongTinHienTai TO QUANLY, THUTHU;
 GO
 
 /* ============================================================
-   Account administration required by the classroom assignment.
+   Project extension: employee SQL account administration.
    A valid employee account is identified by database user = MANV.
    ============================================================ */
 

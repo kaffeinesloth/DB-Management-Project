@@ -27,6 +27,12 @@ class AccountValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "THUTHU hoặc QUANLY"):
             validate_account_input(5, "nv_5", "Secret1!", "DOCGIA")
 
+    def test_oversized_login_and_password_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "đăng nhập tối đa"):
+            validate_account_input(5, "x" * 129, "Secret1!", "THUTHU")
+        with self.assertRaisesRegex(ValueError, "Mật khẩu tối đa"):
+            validate_account_input(5, "nv_5", "x" * 129, "THUTHU")
+
     def test_new_employee_form_is_normalized(self):
         result = validate_new_employee(
             "  Nguyễn ", " An ", True, " Quận 1 ", "0901234567",
@@ -47,6 +53,21 @@ class AccountValidationTests(unittest.TestCase):
             validate_new_employee(
                 "Nguyễn", "An", True, "", "0901234567", "invalid",
                 "nv_an", "Secret1!", "THUTHU",
+            )
+
+    def test_new_employee_rejects_invalid_names_and_unicode_phone_digits(self):
+        for family_name, given_name in (("123", "An"), ("Nguyễn", "@@@")):
+            with self.subTest(family_name=family_name, given_name=given_name):
+                with self.assertRaisesRegex(ValueError, "chữ cái"):
+                    validate_new_employee(
+                        family_name, given_name, True, "", "0901234567",
+                        "an@example.com", "nv_an", "Secret1!", "THUTHU",
+                    )
+
+        with self.assertRaisesRegex(ValueError, "10 đến 11"):
+            validate_new_employee(
+                "Nguyễn", "An", True, "", "٠٩٠١٢٣٤٥٦٧",
+                "an@example.com", "nv_an", "Secret1!", "THUTHU",
             )
 
 

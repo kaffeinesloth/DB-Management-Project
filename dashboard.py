@@ -14,6 +14,17 @@ from account_management.account_screen import AccountScreen
 from database import CURRENT_SESSION, clear_session
 
 
+VALID_DASHBOARD_ROLES = {"THUTHU", "QUANLY"}
+
+
+def require_dashboard_role(current_user: Dict[str, Any]) -> str:
+    """Return an exact authorized role or reject the session."""
+    role_name = str(current_user.get("RoleName") or "").strip().upper()
+    if role_name not in VALID_DASHBOARD_ROLES:
+        raise ValueError("Tài khoản không có nhóm quyền hợp lệ.")
+    return role_name
+
+
 class MainDashboard(ctk.CTk):
     """
     Cửa sổ chính Hệ Thống Quản Lý Thư Viện:
@@ -25,8 +36,11 @@ class MainDashboard(ctk.CTk):
     """
 
     def __init__(self, current_user: Optional[Dict[str, Any]] = None, on_logout=None):
+        resolved_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        role_name = require_dashboard_role(resolved_user)
         super().__init__()
-        self.current_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        self.current_user = resolved_user
+        self.role_name = role_name
         self.on_logout = on_logout
 
         # Thiết lập cửa sổ
@@ -105,11 +119,11 @@ class MainDashboard(ctk.CTk):
         )
         lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
 
-        role_name = (self.current_user.get('RoleName') or 'QUANLY').upper()
+        role_name = self.role_name
         role_color = "#10B981" if "QUANLY" in role_name else "#60A5FA"
         lbl_role = ctk.CTkLabel(
             profile_frame, 
-            text=f"Quyền: {self.current_user.get('RoleName', 'QUANLY')}", 
+            text=f"Quyền: {role_name}",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=role_color
         )
@@ -118,14 +132,14 @@ class MainDashboard(ctk.CTk):
         # Các nút chuyển Tab điều hướng theo phân quyền
         self.nav_buttons = {}
 
-        if "THUTHU" in role_name:
+        if role_name == "THUTHU":
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
                 ("muontra", "Mượn / Trả Sách"),
                 ("thongke", "Báo Cáo Thống Kê")
             ]
-        else:  # QUANLY hoặc ADMIN
+        else:  # Exact QUANLY; unknown roles are rejected before the UI opens.
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
@@ -168,9 +182,9 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        role_name = (self.current_user.get("RoleName") or "QUANLY").upper()
+        role_name = self.role_name
 
-        if "THUTHU" in role_name:
+        if role_name == "THUTHU":
             self.views = {
                 "sach": BookScreen(self.main_container, self.current_user),
                 "docgia": ReaderScreen(self.main_container, self.current_user),

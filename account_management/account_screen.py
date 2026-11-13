@@ -296,6 +296,13 @@ class AccountScreen(ctk.CTkFrame):
             except (pyodbc.Error, ValueError) as error:
                 messagebox.showerror("Không thể tạo", _friendly_db_error(error), parent=dialog)
                 return
+            except Exception:
+                messagebox.showerror(
+                    "Không thể tạo",
+                    "Không thể tạo nhân viên và tài khoản. Vui lòng thử lại.",
+                    parent=dialog,
+                )
+                return
             dialog.destroy()
             self.refresh_accounts()
             item_id = str(employee_id)
@@ -416,11 +423,24 @@ class AccountScreen(ctk.CTkFrame):
 
     def create_account(self):
         if self.selected_employee_id is None:
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn một nhân viên.")
             return
         login_name = self.entry_login.get().strip()
         password = self.entry_password.get()
-        if not login_name or len(password) < 6:
-            messagebox.showwarning("Thiếu thông tin", "Nhập tên đăng nhập và mật khẩu ít nhất 6 ký tự.")
+        if not login_name:
+            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập tên đăng nhập.")
+            self.entry_login.focus_set()
+            return
+        if not password:
+            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập mật khẩu.")
+            self.entry_password.focus_set()
+            return
+        if len(password) < 6:
+            messagebox.showwarning(
+                "Mật khẩu không hợp lệ",
+                "Mật khẩu phải có ít nhất 6 ký tự.",
+            )
+            self.entry_password.focus_set()
             return
         try:
             create_employee_account(
@@ -429,11 +449,18 @@ class AccountScreen(ctk.CTkFrame):
         except (pyodbc.Error, ValueError) as error:
             messagebox.showerror("Không thể tạo", _friendly_db_error(error))
             return
+        except Exception:
+            messagebox.showerror(
+                "Không thể tạo",
+                "Không thể tạo tài khoản. Vui lòng thử lại.",
+            )
+            return
         messagebox.showinfo("Thành công", "Đã tạo tài khoản SQL Server cho nhân viên.")
         self.refresh_accounts()
 
     def delete_account(self):
         if self.selected_employee_id is None:
+            messagebox.showwarning("Chưa chọn", "Vui lòng chọn một nhân viên.")
             return
         values = self.tree.item(str(self.selected_employee_id), "values")
         if not messagebox.askyesno(
@@ -445,6 +472,12 @@ class AccountScreen(ctk.CTkFrame):
             delete_employee_account(self.selected_employee_id)
         except (pyodbc.Error, ValueError) as error:
             messagebox.showerror("Không thể xóa", _friendly_db_error(error))
+            return
+        except Exception:
+            messagebox.showerror(
+                "Không thể xóa",
+                "Không thể xóa tài khoản. Vui lòng thử lại.",
+            )
             return
         messagebox.showinfo("Thành công", "Đã xóa tài khoản SQL Server.")
         self.refresh_accounts()
