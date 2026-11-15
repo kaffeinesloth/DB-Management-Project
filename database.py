@@ -1,8 +1,4 @@
-"""
-database.py: Quản lý kết nối SQL Server và phiên làm việc của người dùng.
-Kế thừa trọn vẹn 100% logic từ nhánh feature/qltv, hỗ trợ đồng thời cả CSDL cục bộ (SQLEXPRESS / QLTV)
-lẫn CSDL container Docker (LibraryManagement).
-"""
+"""Quản lý kết nối SQL Server và phiên làm việc của người dùng."""
 
 import os
 import re
@@ -10,7 +6,11 @@ from typing import Optional, Dict, Any, Set
 import pyodbc
 
 from pathlib import Path
-from dotenv import load_dotenv
+
+try:  # python-dotenv là tùy chọn; Docker/compose vẫn dùng biến môi trường thường.
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
 
 # Tắt connection pooling để phiên TCP của SQL Login đóng ngay lập tức khi đăng xuất / kết thúc truy vấn,
 # tránh giữ zombie session trong sys.dm_exec_sessions làm kẹt sp_XoaTaiKhoanNhanVien (lỗi 51014).
@@ -18,13 +18,22 @@ pyodbc.pooling = False
 
 # Tải cấu hình từ file .env nếu có
 _env_path = Path(__file__).resolve().parent / ".env"
-if _env_path.exists():
+if load_dotenv is not None and _env_path.exists():
     load_dotenv(_env_path)
 
-# Cấu hình máy chủ SQL Server mặc định (ưu tiên Docker localhost,14333 của dự án)
-_default_port = os.environ.get("MSSQL_PORT", "14333")
-SERVER_NAME = os.environ.get("DB_HOST", f"localhost,{_default_port}")
+# Cấu hình mặc định khớp với compose.yaml ("${MSSQL_PORT:-1433}:1433").
+MSSQL_PORT = os.environ.get("MSSQL_PORT", "1433")
+SERVER_NAME = os.environ.get("DB_HOST", f"localhost,{MSSQL_PORT}")
 DATABASE_NAME = os.environ.get("DB_NAME", "LibraryManagement")
+
+PREFERRED_ODBC_DRIVERS = (
+    "ODBC Driver 18 for SQL Server",
+    "ODBC Driver 17 for SQL Server",
+    "SQL Server",
+)
+
+VALID_EMPLOYEE_ROLES = {"THUTHU", "QUANLY"}
+NON_EMPLOYEE_LOGINS = {"sa", "library_app"}
 
 # Thông tin phiên đăng nhập hiện tại (Lưu sau khi xác thực thành công)
 CURRENT_SESSION: Dict[str, Any] = {
@@ -131,6 +140,34 @@ def build_connection_string(
     )
 
 
+def _get_sql_server_drivers() -> list[str]:
+    """Return installed SQL Server drivers in preferred order."""
+    installed = set(pyodbc.drivers())
+    drivers = [driver for driver in PREFERRED_ODBC_DRIVERS if driver in installed]
+    if not drivers:
+        raise RuntimeError("Không tìm thấy ODBC Driver phù hợp để kết nối SQL Server!")
+    return drivers
+
+
+def _is_login_error(error: pyodbc.Error) -> bool:
+    message = str(error).lower()
+    return "18456" in message or "login failed" in message
+
+
+def _is_driver_compatibility_error(error: pyodbc.Error) -> bool:
+    """Identify local driver/TLS failures where another installed driver may work."""
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "encryption not supported",
+            "ssl security error",
+            "seccreatecredentials",
+            "tls",
+        )
+    )
+
+
 def get_connection(
     uid: Optional[str] = None, 
     pwd: Optional[str] = None,
@@ -151,26 +188,27 @@ def get_connection(
     target_srv = server or CURRENT_SESSION.get("active_server") or SERVER_NAME
     target_db = database or CURRENT_SESSION.get("active_db") or DATABASE_NAME
 
-    drivers = [
-        "ODBC Driver 18 for SQL Server", 
-        "ODBC Driver 17 for SQL Server", 
-        "SQL Server"
-    ]
-    last_err = None
-
-    for driver in drivers:
+    last_error = None
+    for driver in _get_sql_server_drivers():
         try:
-            conn_str = build_connection_string(user_id, password, driver, target_srv, target_db)
+            conn_str = build_connection_string(
+                user_id, password, driver, target_srv, target_db
+            )
             conn = ManagedConnection(pyodbc.connect(conn_str, timeout=3))
             global connection
             connection = conn
             return conn
         except pyodbc.Error as err:
-            last_err = err
-            continue
+            # Invalid credentials are definitive. Never retry them with another
+            # driver, because that only delays the same rejection.
+            if _is_login_error(err):
+                raise
+            last_error = err
+            if not _is_driver_compatibility_error(err):
+                raise
 
-    if last_err:
-        raise last_err
+    if last_error:
+        raise last_error
     raise RuntimeError("Không tìm thấy ODBC Driver phù hợp để kết nối SQL Server!")
 
 
@@ -178,7 +216,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     """
     Xác thực đăng nhập trực tiếp qua SQL Server Authentication:
     1. Kết nối vào SQL Server bằng đúng login_name và password của người dùng.
-       (Tự động kiểm tra SQLEXPRESS / QLTV trước, fallback qua Docker LibraryManagement).
+       Ưu tiên máy chủ / CSDL đã cấu hình (.env), sai mật khẩu thì báo lỗi ngay.
     2. Nếu SQL Server xác thực thành công -> gọi sp_LayThongTinNhanVien với tham số @LoginName.
     3. Cập nhật vào CURRENT_SESSION để các truy vấn nghiệp vụ sau thực hiện dưới đúng quyền này.
     """
@@ -189,88 +227,90 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     if not login_clean or not pwd_clean:
         raise ValueError("Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu!")
 
-    # Ưu tiên đúng cổng Docker của dự án, sau đó mới thử các cấu hình cục bộ cũ.
-    # Ưu tiên đúng cổng Docker của dự án (14333/1433), sau đó mới thử các cấu hình cục bộ cũ.
-    docker_port = os.environ.get("MSSQL_PORT", "14333")
-    candidate_servers_raw = [
-        (f"localhost,{docker_port}", "LibraryManagement"),
-        ("localhost,14333", "LibraryManagement"),
+    # Thử máy chủ đã cấu hình (.env / DB_HOST) trước. Sai mật khẩu là kết quả dứt khoát:
+    # báo lỗi ngay, không thử tiếp máy chủ khác. Chỉ khi máy chủ không kết nối được
+    # mới thử các cấu hình cục bộ cũ (SQLEXPRESS / QLTV) của nhóm.
+    candidate_servers = list(dict.fromkeys([
+        (SERVER_NAME, DATABASE_NAME),
         ("localhost,1433", "LibraryManagement"),
-        ("localhost", "LibraryManagement"),
+        ("localhost,14333", "LibraryManagement"),
         (r"localhost\SQLEXPRESS", "LibraryManagement"),
         (r"localhost\SQLEXPRESS", "QLTV"),
-        ("localhost,1433", "QLTV"),
-        ("localhost", "QLTV"),
-    ]
-    candidate_servers = list(dict.fromkeys(candidate_servers_raw))
+    ]))
 
     conn = None
-    last_login_err = None
+    last_error: Optional[BaseException] = None
     active_srv = None
     active_db = None
 
     for srv, db in candidate_servers:
         try:
             conn = get_connection(login_clean, pwd_clean, server=srv, database=db)
-            active_srv = srv
-            active_db = db
+            active_srv, active_db = srv, db
             break
         except pyodbc.Error as err:
-            err_msg = str(err)
-            if "18456" in err_msg or "Login failed" in err_msg:
-                last_login_err = "Tên đăng nhập hoặc mật khẩu SQL Server không chính xác!"
-            continue
-        except Exception:
-            continue
+            if _is_login_error(err):
+                raise ValueError(
+                    "Tên đăng nhập hoặc mật khẩu SQL Server không chính xác!"
+                ) from None
+            last_error = err
 
-    if not conn:
-        if last_login_err:
-            raise ValueError(last_login_err)
-        raise RuntimeError(f"Không thể kết nối đến SQL Server ({SERVER_NAME}). Vui lòng đảm bảo dịch vụ SQL Server đang hoạt động!")
+    if conn is None:
+        raise RuntimeError(
+            f"Không thể kết nối đến SQL Server ({SERVER_NAME}). "
+            "Vui lòng đảm bảo dịch vụ SQL Server đang hoạt động!"
+        ) from last_error
 
     try:
+        if login_clean.casefold() in NON_EMPLOYEE_LOGINS:
+            raise ValueError("Tài khoản này không được phép đăng nhập ứng dụng.")
+
         cursor = conn.cursor()
-        user_info = None
-
-        # Bước 2: Gọi Stored Procedure truyền tham số @LoginName
         try:
-            cursor.execute("EXEC dbo.sp_LayThongTinNhanVien @LoginName = ?", (login_clean,))
+            cursor.execute(
+                "EXEC dbo.sp_LayThongTinNhanVien @LoginName = ?",
+                (login_clean,),
+            )
             row = cursor.fetchone()
-        except Exception:
-            try:
-                cursor.execute("EXEC dbo.sp_LayThongTinHienTai")
-                row = cursor.fetchone()
-            except Exception:
-                row = None
+        except pyodbc.Error as error:
+            raise RuntimeError(
+                "Không thể tải thông tin và quyền của nhân viên."
+            ) from error
 
-        if row:
-            role_name = row[2]
-            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
-            if len(row) > 6 and row[6]:
-                vai_tro = row[6]
+        if not row:
+            raise ValueError(
+                "Tài khoản chưa được liên kết với nhân viên hợp lệ."
+            )
 
-            user_info = {
-                "LoginName": row[0],
-                "UserName": row[1],
-                "RoleName": role_name,
-                "MANV": row[3],
-                "HoTen": row[4],
-                "Email": row[5],
-                "VaiTro": vai_tro
-            }
-        else:
-            # Fallback nếu login quản trị Docker (sa / library_app) không có bản ghi trong sp_LayThongTinNhanVien
-            role_name = "QUANLY" if login_clean in ["admin", "sa", "library_app"] else "THUTHU"
-            vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
-            user_info = {
-                "LoginName": login_clean,
-                "UserName": login_clean,
-                "RoleName": role_name,
-                "MANV": 1,
-                "HoTen": "Ban Quản Trị Hệ Thống" if role_name == "QUANLY" else login_clean,
-                "Email": f"{login_clean}@thuvien.edu.vn",
-                "VaiTro": vai_tro
-            }
+        role_name = str(row[2] or "").strip().upper()
+        try:
+            employee_id = int(row[3])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Tài khoản chưa được liên kết với nhân viên hợp lệ."
+            ) from error
+
+        # Valid employee database users are deliberately named with MANV. This
+        # rejects service/admin logins even when an older stored procedure maps
+        # an unknown account to employee 1.
+        database_user = str(row[1] or "").strip()
+        if employee_id <= 0 or database_user != str(employee_id):
+            raise ValueError(
+                "Tài khoản chưa được liên kết với nhân viên hợp lệ."
+            )
+        if role_name not in VALID_EMPLOYEE_ROLES:
+            raise ValueError("Tài khoản không có nhóm quyền hợp lệ.")
+
+        vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
+        user_info = {
+            "LoginName": row[0],
+            "UserName": database_user,
+            "RoleName": role_name,
+            "MANV": employee_id,
+            "HoTen": row[4],
+            "Email": row[5],
+            "VaiTro": vai_tro,
+        }
 
         # Lưu lại session kết nối của người dùng hiện tại
         CURRENT_SESSION["login_name"] = login_clean
@@ -279,12 +319,12 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
         CURRENT_SESSION["active_server"] = active_srv
         CURRENT_SESSION["active_db"] = active_db
 
-        conn.close()
         return user_info
-    except Exception as ex:
-        if conn:
+    finally:
+        try:
             conn.close()
-        raise RuntimeError(f"Lỗi khi nạp quyền người dùng: {ex}")
+        except pyodbc.Error:
+            pass
 
 
 # Hàm tương thích ngược
