@@ -10,6 +10,7 @@ import pyodbc
 
 from database import CURRENT_SESSION
 from reports import report_actions as actions
+from reports import report_print
 
 
 TABS = ("Độc giả quá hạn", "Tần suất sử dụng", "Sách cần xem xét", "Thống kê tổng hợp")
@@ -52,7 +53,11 @@ class ReportScreen(ctk.CTkFrame):
         self.export_button = ctk.CTkButton(
             controls, text="Xuất CSV", width=110, state="disabled", command=self.export
         )
-        self.export_button.pack(side="left")
+        self.export_button.pack(side="left", padx=(0, 8))
+        self.print_button = ctk.CTkButton(
+            controls, text="In báo cáo", width=110, state="disabled", command=self.print_report
+        )
+        self.print_button.pack(side="left")
 
         self._on_period_type("Quý", initial_month=today.month)
 
@@ -188,6 +193,7 @@ class ReportScreen(ctk.CTkFrame):
         self._result = result
         self._fill_table(self.tables[tab], result)
         self.export_button.configure(state="normal")
+        self.print_button.configure(state="normal")
         text = result.title + (f"  -  {result.summary}" if result.summary else "")
         if not result.rows:
             text += "  -  không có dữ liệu"
@@ -212,7 +218,24 @@ class ReportScreen(ctk.CTkFrame):
             return
         self.status.configure(text=f"Đã lưu {saved}", text_color=TEXT_COLOR)
 
+    def print_report(self) -> None:
+        """Mở bản in A4 (tiêu đề, STT, ngày lập tại TP.HCM, người lập) trong trình duyệt."""
+        if self._result is None:
+            return
+        user = self.current_user or {}
+        creator = user.get("HoTen") or user.get("LoginName") or ""
+        try:
+            path = report_print.open_print_preview(self._result, creator, user.get("MANV"))
+        except OSError as error:
+            self._show_error(f"Không tạo được bản in: {error}")
+            return
+        self.status.configure(
+            text=f"Đã mở bản in trong trình duyệt (Ctrl+P để in / lưu PDF): {path}",
+            text_color=TEXT_COLOR,
+        )
+
     def _show_error(self, message: str) -> None:
         self._result = None
         self.export_button.configure(state="disabled")
+        self.print_button.configure(state="disabled")
         self.status.configure(text=message, text_color=ERROR_COLOR)
