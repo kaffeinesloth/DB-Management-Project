@@ -3,7 +3,7 @@
 import re
 from typing import Any, Dict, List
 
-from database import get_connection
+from database import CURRENT_SESSION, get_connection
 
 
 VALID_ACCOUNT_ROLES = {"THUTHU", "QUANLY"}
@@ -25,6 +25,7 @@ def validate_account_input(
         raise ValueError("Mã nhân viên phải lớn hơn 0.")
     if not normalized_login:
         raise ValueError("Tên đăng nhập không được để trống.")
+    normalized_login = validate_login_name(normalized_login)
     if len(password) < 6:
         raise ValueError("Mật khẩu phải có ít nhất 6 ký tự.")
     if normalized_role not in VALID_ACCOUNT_ROLES:
@@ -121,6 +122,81 @@ def delete_employee_account(employee_id: int) -> None:
         cursor = conn.cursor()
         cursor.execute("EXEC dbo.sp_XoaTaiKhoanNhanVien @MANV=?", employee_id)
         conn.commit()
+
+
+LOGIN_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{2,49}$")
+DEFAULT_RESET_PASSWORD = "123456"
+
+
+def validate_login_name(login_name: str) -> str:
+    """The manager types the login name; the app never builds it by concatenation."""
+    login = (login_name or "").strip()
+    if not LOGIN_PATTERN.fullmatch(login):
+        raise ValueError(
+            "Tên đăng nhập phải bắt đầu bằng chữ cái, dài 3-50 ký tự, "
+            "chỉ gồm chữ, số, dấu chấm hoặc gạch dưới."
+        )
+    return login
+
+
+def list_employees_without_account() -> List[Dict[str, Any]]:
+    """Employees eligible for a new account (1 employee - 1 account).
+
+    Reuses sp_DanhSachTaiKhoanNhanVien (EXECUTE AS OWNER) because reading other
+    users from sys.database_principals needs elevated metadata visibility; a
+    plain VIEW would see no accounts and list everyone as eligible.
+    """
+    return [row for row in list_employee_accounts() if not row["DaCoTaiKhoan"]]
+
+
+def change_own_password(old_password: str, new_password: str, confirm_password: str) -> None:
+    """Change the password of the CURRENTLY logged-in login (old password required)."""
+    if not old_password:
+        raise ValueError("Vui lòng nhập mật khẩu cũ.")
+    if len(new_password) < 6:
+        raise ValueError("Mật khẩu mới phải có ít nhất 6 ký tự.")
+    if new_password != confirm_password:
+        raise ValueError("Xác nhận mật khẩu mới không khớp.")
+    if new_password == old_password:
+        raise ValueError("Mật khẩu mới phải khác mật khẩu cũ.")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("EXEC dbo.sp_DoiMatKhau @OldPassword=?, @NewPassword=?",
+                       old_password, new_password)
+        conn.commit()
+    # Every later query opens a new connection with the session password.
+    CURRENT_SESSION["password"] = new_password
+
+
+def reset_employee_password(employee_id: int) -> str:
+    """Manager resets another employee's password to the default value."""
+    employee_id = _positive_id(employee_id)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("EXEC dbo.sp_ResetMatKhauNhanVien @MANV=?", employee_id)
+        conn.commit()
+    return DEFAULT_RESET_PASSWORD
+
+
+def change_account_role(employee_id: int, role_name: str) -> None:
+    employee_id = _positive_id(employee_id)
+    role = (role_name or "").strip().upper()
+    if role not in VALID_ACCOUNT_ROLES:
+        raise ValueError("Nhóm quyền chỉ có thể là THUTHU hoặc QUANLY.")
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("EXEC dbo.sp_DoiNhomQuyenTaiKhoan @MANV=?, @RoleName=?", employee_id, role)
+        conn.commit()
+
+
+def _positive_id(employee_id: Any) -> int:
+    try:
+        value = int(employee_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Mã nhân viên phải là số nguyên hợp lệ.") from error
+    if value <= 0:
+        raise ValueError("Mã nhân viên phải lớn hơn 0.")
+    return value
 
 
 def create_employee_with_account(
