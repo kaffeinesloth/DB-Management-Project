@@ -170,15 +170,21 @@ class BorrowingScreen(ctk.CTkFrame):
         )
         lbl_panel_title.pack(pady=(15, 12), anchor="w")
 
-        # 1. Mã độc giả
-        lbl_dg = ctk.CTkLabel(right_frame, text="Mã độc giả (MADG) *", font=ctk.CTkFont(size=12))
+        # 1. Mã độc giả (ComboBox gợi ý thẻ hoạt động + cho phép gõ trực tiếp)
+        lbl_dg = ctk.CTkLabel(right_frame, text="Độc giả mượn sách (MADG) *", font=ctk.CTkFont(size=12))
         lbl_dg.pack(anchor="w")
 
         dg_row = ctk.CTkFrame(right_frame, fg_color="transparent")
         dg_row.pack(fill="x", pady=(2, 6))
         dg_row.grid_columnconfigure(0, weight=1)
 
-        self.txt_madg = ctk.CTkEntry(dg_row, placeholder_text="Ví dụ: 1", height=35)
+        self.txt_madg = ctk.CTkComboBox(
+            dg_row,
+            values=["-- Chọn hoặc gõ mã ĐG --"],
+            height=35,
+            command=lambda _val: self.handle_check_docgia(silent_empty=True),
+        )
+        self.txt_madg.set("-- Chọn hoặc gõ mã ĐG --")
         self.txt_madg.grid(row=0, column=0, padx=(0, 6), sticky="ew")
 
         btn_check_dg = ctk.CTkButton(
@@ -272,11 +278,25 @@ class BorrowingScreen(ctk.CTkFrame):
             records = MuonTraDAO.get_danh_sach_phieu_dang_muon()
             self.display_records(records)
             self.txt_search.delete(0, "end")
+            self.load_available_readers_recommendation()
             self.load_available_books_recommendation()
         except ValueError as ve:
             messagebox.showwarning("Cảnh báo", str(ve))
         except Exception as ex:
             messagebox.showerror("Lỗi CSDL", f"Không thể tải danh sách mượn sách:\n{ex}")
+
+    def load_available_readers_recommendation(self):
+        """Tải danh sách thẻ độc giả đang hoạt động (HOATDONG = 1) làm gợi ý cho ComboBox."""
+        try:
+            readers = [r for r in DocGiaDAO.get_all() if r.get("HOATDONG")]
+            readers.sort(key=lambda r: int(r["MADG"]))
+            options = ["-- Chọn hoặc gõ mã ĐG --"]
+            for r in readers:
+                ho_ten = f"{r.get('HODG', '')} {r.get('TENDG', '')}".strip()
+                options.append(f"{r['MADG']} | {ho_ten} ({r.get('SOCMND', '')})")
+            self.txt_madg.configure(values=options)
+        except Exception as ex:
+            print(f"Lỗi tải danh sách gợi ý độc giả: {ex}")
 
     def load_available_books_recommendation(self):
         """Tải danh sách các cuốn sách đang sẵn sàng (CHOMUON = 0, TINHTRANG = 1) làm gợi ý cho Combobox."""
@@ -328,10 +348,20 @@ class BorrowingScreen(ctk.CTkFrame):
         except Exception as ex:
             messagebox.showerror("Lỗi tìm kiếm", str(ex))
 
-    def handle_check_docgia(self):
-        madg_str = self.txt_madg.get().strip()
+    def _parse_madg_input(self, raw_input: str) -> str:
+        text = raw_input.strip()
+        if not text or text.startswith("--"):
+            return ""
+        if " | " in text:
+            return text.split(" | ")[0].strip()
+        return text
+
+    def handle_check_docgia(self, silent_empty: bool = False):
+        madg_str = self._parse_madg_input(self.txt_madg.get())
         if not madg_str:
-            messagebox.showwarning("Thiếu dữ liệu", "Vui lòng nhập Mã độc giả để kiểm tra!")
+            self.lbl_dg_info.configure(text="")
+            if not silent_empty:
+                messagebox.showwarning("Thiếu dữ liệu", "Vui lòng chọn hoặc nhập Mã độc giả để kiểm tra!")
             return
 
         try:
@@ -362,9 +392,9 @@ class BorrowingScreen(ctk.CTkFrame):
         return text
 
     def handle_borrow_books(self):
-        madg_str = self.txt_madg.get().strip()
+        madg_str = self._parse_madg_input(self.txt_madg.get())
         if not madg_str:
-            messagebox.showwarning("Thiếu dữ liệu", "Vui lòng nhập Mã độc giả!")
+            messagebox.showwarning("Thiếu dữ liệu", "Vui lòng chọn hoặc nhập Mã độc giả!")
             return
 
         try:
@@ -496,9 +526,9 @@ class BorrowingScreen(ctk.CTkFrame):
         )
 
     def clear_form(self):
-        """Xóa trắng các ô nhập trên form và khôi phục placeholder."""
+        """Xóa trắng các ô nhập trên form và khôi phục mặc định."""
         self.focus_set()
-        self.txt_madg.delete(0, "end")
+        self.txt_madg.set("-- Chọn hoặc gõ mã ĐG --")
         self.cb_sach1.set("-- Chọn hoặc gõ mã sách --")
         self.cb_sach2.set("-- Chọn hoặc gõ mã sách --")
         self.cb_sach3.set("-- Chọn hoặc gõ mã sách --")

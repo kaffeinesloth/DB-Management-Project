@@ -64,7 +64,11 @@ SELECT
     bs.backup_set_id,
     bs.position,
     bs.backup_finish_date                                         AS NgayGioBackup,
-    bs.user_name                                                  AS NguoiSaoLuu,
+    CASE
+        WHEN nv.MANV IS NOT NULL
+            THEN CONCAT(nv.HONV, N' ', nv.TENNV, N' (', bs.user_name, N')')
+        ELSE bs.user_name
+    END                                                           AS NguoiSaoLuu,
     bs.name                                                       AS TenBanSaoLuu,
     bs.description                                                AS DienGiai,
     CAST(ROUND(bs.backup_size / 1024.0 / 1024.0, 2) AS DECIMAL(18, 2)) AS KichThuocMB,
@@ -74,6 +78,11 @@ SELECT
 FROM msdb.dbo.backupset AS bs
 INNER JOIN msdb.dbo.backupmediafamily AS bmf
     ON bmf.media_set_id = bs.media_set_id
+LEFT JOIN sys.database_principals AS dp
+    ON dp.sid = SUSER_SID(bs.user_name)
+   AND dp.type = 'S'
+LEFT JOIN dbo.NHANVIEN AS nv
+    ON TRY_CAST(dp.name AS INT) = nv.MANV
 WHERE bs.database_name = DB_NAME()
   AND bs.type = 'D'                         -- D = full database backup
   AND bs.media_set_id = (

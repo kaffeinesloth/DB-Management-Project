@@ -227,5 +227,167 @@ class ReaderDatabaseWorkflowTests(unittest.TestCase):
         self.assertIn("INNER JOIN dbo.DOCGIA", cursor.calls[1][0])
 
 
+class FormStateAndScreenWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import tkinter as tk
+        import customtkinter as ctk
+        try:
+            cls.root = ctk.CTk()
+        except tk.TclError as error:
+            raise unittest.SkipTest(f"Tk unavailable: {error}")
+        cls.root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.root.destroy()
+
+    def setUp(self):
+        import customtkinter as ctk
+        from ui_state import FormStateController, build_command_bar
+        self.frame = ctk.CTkFrame(self.root)
+        self.inputs = {
+            "ID": ctk.CTkEntry(self.frame),
+            "NAME": ctk.CTkEntry(self.frame),
+            "TYPE": ctk.CTkComboBox(self.frame, values=["A", "B"]),
+        }
+        noop = lambda: None  # noqa: E731
+        self.buttons = build_command_bar(
+            self.frame, {k: noop for k in ("add", "edit", "delete", "save", "cancel", "exit")}
+        )
+        self.extra = ctk.CTkButton(self.frame, text="Gia hạn")
+        self.form = FormStateController(
+            self.inputs, self.buttons, key_fields=("ID",),
+            view_only_widgets=[self.extra], defaults={"TYPE": "A"},
+        )
+        self.form.to_view()
+
+    def tearDown(self):
+        self.frame.destroy()
+
+    def state(self, widget):
+        return widget.cget("state")
+
+    def assert_buttons(self, on, off):
+        for name in on:
+            self.assertEqual(self.state(self.buttons[name]), "normal", name)
+        for name in off:
+            self.assertEqual(self.state(self.buttons[name]), "disabled", name)
+
+    def test_view_locks_inputs_and_disables_save_cancel(self):
+        from ui_state import FormMode
+        self.assertIs(self.form.mode, FormMode.VIEW)
+        for widget in self.inputs.values():
+            self.assertEqual(self.state(widget), "disabled")
+        self.assert_buttons(on=("add", "edit", "delete", "exit"), off=("save", "cancel"))
+        self.assertEqual(self.state(self.extra), "normal")
+
+    def test_add_unlocks_clears_and_swaps_buttons(self):
+        self.form.fill({"ID": "S01", "NAME": "Old", "TYPE": "B"})
+        self.form.to_add()
+        self.assertEqual(self.form.values(), {"ID": "", "NAME": "", "TYPE": "A"})
+        self.assertEqual(self.state(self.inputs["ID"]), "normal")
+        self.assertEqual(self.state(self.inputs["TYPE"]), "readonly")
+        self.assert_buttons(on=("save", "cancel"), off=("add", "edit", "delete", "exit"))
+        self.assertEqual(self.state(self.extra), "disabled")
+
+    def test_edit_keeps_primary_key_locked(self):
+        self.form.fill({"ID": "S01", "NAME": "Old", "TYPE": "B"})
+        self.form.to_edit()
+        self.assertEqual(self.state(self.inputs["ID"]), "disabled")
+        self.assertEqual(self.state(self.inputs["NAME"]), "normal")
+        self.assert_buttons(on=("save", "cancel"), off=("add", "edit", "delete", "exit"))
+
+    def test_cancel_restores_original_values_and_locks(self):
+        from ui_state import FormMode
+        self.form.fill({"ID": "S01", "NAME": "Old", "TYPE": "B"})
+        self.form.to_edit()
+        self.inputs["NAME"].delete(0, "end")
+        self.inputs["NAME"].insert(0, "Changed")
+        self.form.cancel()
+        self.assertEqual(self.form.values()["NAME"], "Old")
+        self.assertIs(self.form.mode, FormMode.VIEW)
+        self.assertEqual(self.state(self.inputs["NAME"]), "disabled")
+
+    def test_values_are_stripped(self):
+        self.form.to_add()
+        self.inputs["NAME"].insert(0, "   Nguyễn An   ")
+        self.assertEqual(self.form.values()["NAME"], "Nguyễn An")
+
+    @patch("book_management.book_screen.SachDAO")
+    def test_book_screen_switches_tree_to_isbn_and_shows_zero_copy_titles(self, mock_dao):
+        from book_management.book_screen import BookScreen, ENTITY_COPY, ENTITY_TITLE
+        mock_dao.get_all_sach.return_value = [
+            {"MASACH": "S0001", "ISBN": "9786041001", "TENSACH": "Mắt biếc",
+             "THELOAI": "Văn học", "HOTENTG": "Nguyễn Nhật Ánh", "ViTri": "Kệ A1",
+             "GiaBia": 95000, "TINHTRANG": 1, "CHOMUON": 0, "MANGANTU": 1}
+        ]
+        mock_dao.get_all_isbn.return_value = [
+            {"ISBN": "9786041001", "TENSACH": "Mắt biếc", "THELOAI": "Văn học",
+             "HOTENTG": "Nguyễn Nhật Ánh", "NGONNGU": "Tiếng Việt", "NHAXB": "NXB Trẻ",
+             "GIA": 95000, "GiaBia": 95000, "TongBanSao": 1, "BanSaoKhaDung": 1},
+            {"ISBN": "ISBN000099", "TENSACH": "Sách Mới Chưa Nhập Bản Sao", "THELOAI": "Khoa học",
+             "HOTENTG": "Tác giả B", "NGONNGU": "Tiếng Việt", "NHAXB": "NXB Giáo Dục",
+             "GIA": 120000, "GiaBia": 120000, "TongBanSao": 0, "BanSaoKhaDung": 0},
+        ]
+        mock_dao.get_danh_muc_ngan_tu.return_value = [{"MANGANTU": 1, "KE": "Kệ A1", "MOTA": "Tầng 1"}]
+        mock_dao.get_danh_muc_the_loai.return_value = [{"MATL": "TL001", "THELOAI": "Văn học"}]
+        mock_dao.get_danh_muc_tac_gia.return_value = [{"MATACGIA": 1, "HOTENTG": "Nguyễn Nhật Ánh"}]
+        mock_dao.get_danh_muc_ngon_ngu.return_value = [{"MANGONNGU": 1, "NGONNGU": "Tiếng Việt"}]
+        mock_dao.get_dau_sach.return_value = {
+            "ISBN": "ISBN000099", "TENSACH": "Sách Mới Chưa Nhập Bản Sao", "GIA": 120000,
+            "MATL": "TL001", "MATACGIA": 1, "MANGONNGU": 1, "NHAXB": "NXB Giáo Dục",
+            "SOTRANG": 200, "KHOSACH": "A5", "LANXUATBAN": 1, "NOIDUNG": "",
+        }
+
+        screen = BookScreen(self.root, current_user={"RoleName": "QUANLY"})
+        try:
+            self.assertEqual(screen.entity, ENTITY_COPY)
+            self.assertEqual(list(screen.tree.get_children()), ["S0001"])
+            self.assertEqual(screen.btn_toggle_status.cget("state"), "normal")
+
+            screen.selector.set(ENTITY_TITLE)
+            screen._switch_entity(ENTITY_TITLE)
+            self.assertIn("ISBN000099", screen.tree.get_children())
+            self.assertEqual(screen.btn_toggle_status.cget("state"), "disabled")
+
+            screen.tree.selection_set("ISBN000099")
+            screen._on_select()
+            self.assertEqual(screen.form.values()["ISBN"], "ISBN000099")
+        finally:
+            screen.destroy()
+
+
+class BorrowingFixesTests(unittest.TestCase):
+    def test_parse_madg_input_handles_combo_and_raw_id(self):
+        from borrowing_and_returns.borrowing_screen import BorrowingScreen
+        dummy = BorrowingScreen.__new__(BorrowingScreen)
+        self.assertEqual(dummy._parse_madg_input("12 | Nguyễn An (079201000001)"), "12")
+        self.assertEqual(dummy._parse_madg_input("  7  "), "7")
+        self.assertEqual(dummy._parse_madg_input("-- Chọn hoặc gõ mã ĐG --"), "")
+
+    @patch("borrowing_and_returns.borrowing_actions.get_connection")
+    @patch("borrowing_and_returns.borrowing_actions.SachDAO.kiem_tra_sach_cho_muon")
+    @patch("borrowing_and_returns.borrowing_actions.DocGiaDAO.kiem_tra_the_hop_le_muon_sach")
+    def test_tao_phieu_muon_reraises_value_error_without_runtime_wrapping(
+        self, mock_check_dg, mock_check_sach, mock_get_conn
+    ):
+        from unittest.mock import MagicMock
+        from borrowing_and_returns.borrowing_actions import MuonTraDAO
+        mock_check_dg.return_value = (True, "OK", 0)
+        mock_check_sach.return_value = (True, "OK", {"MASACH": "S0001", "TENSACH": "Mắt biếc"})
+
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        cursor = conn.cursor.return_value
+        cursor.fetchone.return_value = (101,)
+        cursor.rowcount = 0
+        mock_get_conn.return_value = conn
+
+        with self.assertRaisesRegex(ValueError, "vừa có người khác mượn"):
+            MuonTraDAO.tao_phieu_muon(1, 1, 1, ["S0001"])
+        conn.rollback.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

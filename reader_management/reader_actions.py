@@ -5,7 +5,10 @@ from datetime import datetime
 import re
 from typing import Any, Dict, List, Optional
 
-from database import get_connection
+from database import (
+    FK_DELETE_MESSAGE, PERMISSION_DENIED, PRIMARY_KEY, TRUNCATION, UNIQUE_INDEX,
+    get_connection, has_error_code, is_fk_violation,
+)
 
 
 class ReaderActions:
@@ -92,15 +95,36 @@ class ReaderActions:
 
     @staticmethod
     def _raise_database_error(error: Exception) -> None:
-        """Translate common SQL Server failures into messages suitable for the UI."""
-        message = str(error)
-        if "UX_DOCGIA_SOCMND_ACTIVE" in message or "2601" in message or "2627" in message:
+        """Translate SQL Server failures by NATIVE ERROR CODE into UI messages."""
+        if is_fk_violation(error):                                   # 547
+            raise ValueError(FK_DELETE_MESSAGE) from error
+        if "UX_DOCGIA_SOCMND_ACTIVE" in str(error) or has_error_code(error, UNIQUE_INDEX, PRIMARY_KEY):
             raise ValueError("CMND/CCCD này đã có một thẻ đang hoạt động!") from error
-        if "2628" in message or "8152" in message:
+        if has_error_code(error, *TRUNCATION):
             raise ValueError("Một trường dữ liệu vượt quá độ dài cho phép của cơ sở dữ liệu!") from error
-        if "229" in message or "permission" in message.lower():
+        if has_error_code(error, PERMISSION_DENIED):
             raise PermissionError("Tài khoản hiện tại không có quyền thực hiện thao tác này!") from error
         raise RuntimeError(f"Lỗi SQL Server khi xử lý độc giả: {error}") from error
+
+    @staticmethod
+    def delete(madg: int) -> bool:
+        """Delete a reader card. A card with loan history is protected by FK (error 547)."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("DELETE FROM dbo.DOCGIA WHERE MADG = ?;", (int(madg),))
+                deleted = cursor.rowcount == 1
+                if not deleted:
+                    raise ValueError(f"Không tìm thấy thẻ độc giả mã {madg}; vui lòng làm mới danh sách!")
+                conn.commit()
+                return True
+            except ValueError:
+                conn.rollback()
+                raise
+            except Exception as error:
+                conn.rollback()
+                ReaderActions._raise_database_error(error)
+        return False
 
     @staticmethod
     def get_all(limit: int = 500) -> List[Dict[str, Any]]:
