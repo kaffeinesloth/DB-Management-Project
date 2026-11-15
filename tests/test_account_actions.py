@@ -278,30 +278,30 @@ class AccountScreenDynamicButtonsTests(unittest.TestCase):
 
         screen = AccountScreen(self.root, current_user={"LoginName": "admin", "RoleName": "QUANLY"})
         try:
-            btns = screen.state.buttons
             screen.tree.selection_set("1")
             screen._on_select()
-            self.assertEqual(btns["add"].cget("state"), "disabled")
-            self.assertEqual(btns["edit"].cget("state"), "normal")
-            self.assertEqual(btns["delete"].cget("state"), "normal")
+            self.assertEqual(screen.btn_create.cget("state"), "disabled")
+            self.assertEqual(screen.btn_role.cget("state"), "normal")
+            self.assertEqual(screen.btn_delete.cget("state"), "normal")
             self.assertEqual(screen.btn_reset.cget("state"), "normal")
 
             screen.tree.selection_set("3")
             screen._on_select()
-            self.assertEqual(btns["add"].cget("state"), "disabled")
-            self.assertEqual(btns["edit"].cget("state"), "disabled")
-            self.assertEqual(btns["delete"].cget("state"), "disabled")
+            self.assertEqual(screen.btn_create.cget("state"), "disabled")
+            self.assertEqual(screen.btn_role.cget("state"), "disabled")
+            self.assertEqual(screen.btn_delete.cget("state"), "disabled")
             self.assertEqual(screen.btn_reset.cget("state"), "disabled")
 
             screen.tree.selection_set("5")
             screen._on_select()
-            self.assertEqual(btns["add"].cget("state"), "normal")
-            self.assertEqual(btns["edit"].cget("state"), "disabled")
-            self.assertEqual(btns["delete"].cget("state"), "disabled")
+            self.assertEqual(screen.btn_create.cget("state"), "normal")
+            self.assertEqual(screen.btn_role.cget("state"), "disabled")
+            self.assertEqual(screen.btn_delete.cget("state"), "disabled")
             self.assertEqual(screen.btn_reset.cget("state"), "disabled")
 
-            screen.on_add()
-            self.assertEqual(screen.state.values()["employee"], "5 - Võ Oanh")
+            with patch.object(screen, "_open_create_account_dialog") as open_dialog:
+                screen.on_add()
+                open_dialog.assert_called_once_with("5 - Võ Oanh")
         finally:
             screen.destroy()
 

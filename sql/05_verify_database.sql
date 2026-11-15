@@ -235,6 +235,35 @@ BEGIN
     ;THROW 50107, 'The shared application database role is missing.', 1;
 END;
 
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.database_scoped_configurations
+    WHERE name = N'IDENTITY_CACHE' AND value = 1
+)
+BEGIN
+    ;THROW 50111, 'IDENTITY_CACHE must be OFF to prevent large ID jumps after container restarts.', 1;
+END;
+
+IF DATABASE_PRINCIPAL_ID(N'DOCGIA') IS NULL
+   OR DATABASE_PRINCIPAL_ID(N'shared_docgia') IS NULL
+   OR OBJECT_ID(N'dbo.v_TraCuuSachDocGia', N'V') IS NULL
+BEGIN
+    ;THROW 50109, 'The shared read-only DOCGIA catalogue account is missing.', 1;
+END;
+
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.database_role_members AS drm
+    JOIN sys.database_principals AS role_dp ON role_dp.principal_id = drm.role_principal_id
+    JOIN sys.database_principals AS member_dp ON member_dp.principal_id = drm.member_principal_id
+    WHERE role_dp.name = N'DOCGIA' AND member_dp.name = N'shared_docgia'
+)
+BEGIN
+    ;THROW 50110, 'The shared docgia user is not a member of DOCGIA.', 1;
+END;
+
 SELECT
     N'DATABASE_CONTRACT_OK' AS Result,
     DB_NAME() AS DatabaseName,

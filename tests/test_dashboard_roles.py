@@ -9,6 +9,7 @@ class DashboardRoleTests(unittest.TestCase):
     def test_known_roles_are_accepted(self):
         self.assertEqual(require_dashboard_role({"RoleName": "THUTHU"}), "THUTHU")
         self.assertEqual(require_dashboard_role({"RoleName": "quanly"}), "QUANLY")
+        self.assertEqual(require_dashboard_role({"RoleName": "docgia"}), "DOCGIA")
 
     def test_missing_and_unknown_roles_are_rejected(self):
         for role in (None, "", "db_owner", "library_app_role", "ADMIN"):
