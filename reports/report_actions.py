@@ -1,120 +1,229 @@
-"""Report validation and database operations."""
+"""Báo cáo thống kê: truy vấn và tiện ích. SQL nằm trong sql/06_reports.sql."""
 
-from typing import List, Dict, Any
-from database import get_connection
+import calendar
+import csv
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any
 
-
-class ReportActions:
-    """
-    Data Access Object (DAO) xử lý các truy vấn Báo Cáo Thống Kê:
-    1. Thống kê độc giả mượn sách quá hạn (TRA = 0 và trễ hạn) - Sử dụng View v_ChiTietPhieuMuon_Phat / v_DOCGIA_MUON_QUAHAN.
-    2. Thống kê tần suất mượn sách (Top đầu sách mượn nhiều nhất / ít nhất) - View v_TANSUAT_SU_DUNG_SACH.
-    3. Thống kê tổng quan KPI thư viện thời gian thực.
-    """
-
-    @staticmethod
-    def get_doc_gia_qua_han() -> List[Dict[str, Any]]:
-        """
-        Lấy danh sách các độc giả đang mượn sách quá hạn:
-        - Mượn mang về (HINHTHUC=1): Quá 30 ngày.
-        - Mượn tại chỗ (HINHTHUC=0): Quá 0 ngày.
-        """
-        query = """
-            SELECT 
-                MADG,
-                HoTenDG,
-                DIENTHOAI,
-                EMAILDG,
-                MAPHIEU,
-                MASACH,
-                TENSACH,
-                HinhThucStr AS HinhThuc,
-                CONVERT(VARCHAR(10), NGAYMUON, 103) AS NgayMuonStr,
-                SoNgayDaMuon,
-                SoNgayTre,
-                TienPhatTre AS TienPhatUocTinh
-            FROM dbo.v_ChiTietPhieuMuon_Phat
-            WHERE TRA = 0 AND SoNgayTre > 0
-            ORDER BY SoNgayTre DESC;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            cols = [col[0] for col in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-    @staticmethod
-    def get_tan_suat_muon_sach() -> List[Dict[str, Any]]:
-        """
-        Thống kê tần suất mượn sách theo từng đầu sách (ISBN),
-        sắp xếp theo số lượt mượn giảm dần (Được mượn nhiều nhất lên đầu).
-        Tối ưu truy vấn: Gom nhóm trước trên CT_PHIEUMUON và SACH (mỗi bảng chỉ quét 1 lần,
-        không dùng correlated subquery lặp theo từng dòng ISBN).
-        """
-        query = """
-            WITH CopyLoans AS (
-                SELECT
-                    ct.MASACH,
-                    COUNT(*) AS SoLuotMuonCuon
-                FROM dbo.CT_PHIEUMUON ct
-                GROUP BY ct.MASACH
-            ),
-            SachStats AS (
-                SELECT
-                    s.ISBN,
-                    COUNT(*) AS TongSoCuon,
-                    SUM(CASE WHEN s.CHOMUON = 0 AND s.TINHTRANG = 1 THEN 1 ELSE 0 END) AS SoCuonSanCo,
-                    ISNULL(SUM(cl.SoLuotMuonCuon), 0) AS SoLuotMuon
-                FROM dbo.SACH s
-                LEFT JOIN CopyLoans cl ON cl.MASACH = s.MASACH
-                GROUP BY s.ISBN
-            )
-            SELECT 
-                RTRIM(i.ISBN) AS ISBN,
-                i.TENSACH,
-                ISNULL(tl.THELOAI, N'Chưa phân loại') AS TheLoai,
-                ISNULL(i.GIA, 0) AS GiaBia,
-                ISNULL(st.TongSoCuon, 0) AS TongSoCuon,
-                ISNULL(st.SoCuonSanCo, 0) AS SoCuonSanCo,
-                ISNULL(st.SoLuotMuon, 0) AS SoLuotMuon
-            FROM dbo.ISBN i
-            LEFT JOIN dbo.THELOAI tl ON i.MATL = tl.MATL
-            LEFT JOIN SachStats st ON st.ISBN = i.ISBN
-            ORDER BY SoLuotMuon DESC, i.TENSACH ASC;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            cols = [col[0] for col in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-    @staticmethod
-    def get_tong_quan() -> Dict[str, Any]:
-        """Lấy các chỉ số tổng quan phục vụ Dashboard Thống kê trong 1 truy vấn duy nhất."""
-        query = """
-            SELECT
-                (SELECT COUNT(*) FROM dbo.ISBN) AS TongDauSach,
-                (SELECT COUNT(*) FROM dbo.SACH) AS TongCuonSach,
-                (SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1) AS DangMuon,
-                (SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1) AS DocGiaHoatDong,
-                COUNT(*) AS SoQuaHan,
-                ISNULL(SUM(TienPhatTre), 0) AS TienPhatUocTinh
-            FROM dbo.v_ChiTietPhieuMuon_Phat
-            WHERE TRA = 0 AND SoNgayTre > 0;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            row = cursor.fetchone()
-            return {
-                "TongDauSach": row[0] if row else 0,
-                "TongCuonSach": row[1] if row else 0,
-                "DangMuon": row[2] if row else 0,
-                "DocGiaHoatDong": row[3] if row else 0,
-                "SoQuaHan": row[4] if row else 0,
-                "TienPhatUocTinh": row[5] if row else 0,
-            }
+import database
 
 
-# Bí danh tương thích
-ThongKeDAO = ReportActions
+@dataclass
+class ReportResult:
+    title: str
+    columns: list[str]
+    rows: list[tuple]
+    summary: str = ""
+    period: tuple[date, date] | None = None
+    keys: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Period:
+    year: int
+    month: int | None = None
+    quarter: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 1900 <= self.year <= 2078:
+            raise ValueError("Năm phải từ 1900 đến 2078.")
+        if self.month is not None and self.quarter is not None:
+            raise ValueError("Chỉ chọn tháng hoặc quý, không chọn cả hai.")
+        if self.month is not None and not 1 <= self.month <= 12:
+            raise ValueError("Tháng phải từ 1 đến 12.")
+        if self.quarter is not None and not 1 <= self.quarter <= 4:
+            raise ValueError("Quý phải từ 1 đến 4.")
+
+    @property
+    def bounds(self) -> tuple[date, date]:
+        """Ngày đầu và ngày cuối của kỳ (tính cả hai đầu)."""
+        if self.month is not None:
+            first_month = last_month = self.month
+        elif self.quarter is not None:
+            first_month, last_month = (self.quarter - 1) * 3 + 1, self.quarter * 3
+        else:
+            first_month, last_month = 1, 12
+        last_day = calendar.monthrange(self.year, last_month)[1]
+        return date(self.year, first_month, 1), date(self.year, last_month, last_day)
+
+    @property
+    def label(self) -> str:
+        if self.month is not None:
+            return f"Tháng {self.month}/{self.year}"
+        if self.quarter is not None:
+            return f"Quý {self.quarter}/{self.year}"
+        return f"Năm {self.year}"
+
+    def as_of(self, today: date | None = None) -> date:
+        """Ngày cuối kỳ, hoặc hôm nay nếu kỳ chưa kết thúc."""
+        today = today or date.today()
+        return min(self.bounds[1], today)
+
+
+def _fetch(sql: str, params: tuple = ()) -> tuple[list[str], list[tuple]]:
+    """Run one query on the logged-in user's connection and close it afterwards."""
+    conn = database.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        keys = [column[0] for column in cursor.description]
+        rows = [tuple(row) for row in cursor.fetchall()]
+        cursor.close()
+    finally:
+        conn.close()
+    return keys, rows
+
+
+def _vnd(amount: int | None) -> str:
+    return f"{int(amount or 0):,} đ".replace(",", ".")
+
+
+def overview() -> dict[str, Any]:
+    """Chỉ số tổng quan hiện tại cho các thẻ KPI."""
+    _, rows = _fetch(
+        "SELECT "
+        "(SELECT COUNT(*) FROM dbo.ISBN), "
+        "(SELECT COUNT(*) FROM dbo.SACH), "
+        "(SELECT COUNT(*) FROM dbo.SACH WHERE CHOMUON = 1), "
+        "(SELECT COUNT(*) FROM dbo.DOCGIA WHERE HOATDONG = 1), "
+        "(SELECT COUNT(*) FROM dbo.fn_BaoCao_QuaHan(CONVERT(DATE, GETDATE()))), "
+        "(SELECT COALESCE(SUM(TIENPHAT), 0) FROM dbo.fn_BaoCao_QuaHan(CONVERT(DATE, GETDATE())))"
+    )
+    titles, copies, on_loan, readers, overdue, fines = rows[0]
+    return {
+        "TongDauSach": titles,
+        "TongCuonSach": copies,
+        "DangMuon": on_loan,
+        "DocGiaHoatDong": readers,
+        "SoQuaHan": overdue,
+        "TienPhatUocTinh": fines,
+    }
+
+
+def overdue_readers(as_of: date) -> ReportResult:
+    keys, rows = _fetch(
+        "SELECT MADG, HOTENDG, DIENTHOAI, EMAILDG, MAPHIEU, MASACH, TENSACH, "
+        "NGAYMUON, NGAYHENTRA, SONGAYQUAHAN, TIENPHAT "
+        "FROM dbo.fn_BaoCao_QuaHan(?) "
+        "ORDER BY SONGAYQUAHAN DESC, MADG, MASACH",
+        (as_of,),
+    )
+    readers = len({row[0] for row in rows})
+    total_fine = sum(row[-1] for row in rows)
+    return ReportResult(
+        title=f"Độc giả mượn sách quá hạn tính đến {as_of:%d/%m/%Y}",
+        columns=[
+            "Mã ĐG", "Độc giả", "Điện thoại", "Email", "Mã phiếu", "Mã sách", "Tên sách",
+            "Ngày mượn", "Hạn trả", "Số ngày trễ", "Tiền phạt (đ)",
+        ],
+        keys=keys,
+        rows=rows,
+        summary=(
+            f"{readers} độc giả, {len(rows)} cuốn quá hạn, "
+            f"tiền phạt tạm tính {_vnd(total_fine)}"
+        ),
+    )
+
+
+def usage_frequency(period: Period) -> ReportResult:
+    start, end = period.bounds
+    keys, rows = _fetch(
+        "SELECT XEPHANG, ISBN, TENSACH, THELOAI, SOBANSAO, SOLUOTMUON, SODOCGIA "
+        "FROM dbo.fn_BaoCao_TanSuat(?, ?) "
+        "ORDER BY XEPHANG, TENSACH",
+        (start, end),
+    )
+    loans = sum(row[5] for row in rows)
+    unused = sum(1 for row in rows if row[5] == 0)
+    return ReportResult(
+        title=f"Tần suất sử dụng sách - {period.label}",
+        columns=["Hạng", "ISBN", "Tên sách", "Thể loại", "Số bản", "Lượt mượn", "Số độc giả"],
+        keys=keys,
+        rows=rows,
+        period=(start, end),
+        summary=(
+            f"{loans} lượt mượn trên {len(rows) - unused} đầu sách; "
+            f"{unused} đầu sách không được mượn"
+        ),
+    )
+
+
+def stock_review(period: Period) -> ReportResult:
+    start, end = period.bounds
+    keys, rows = _fetch(
+        "SELECT MASACH, ISBN, TENSACH, KE, VITRI, LANMUONCUOI, LYDO "
+        "FROM dbo.fn_BaoCao_SachCanXemXet(?, ?) "
+        "ORDER BY LYDO, KE, MASACH",
+        (start, end),
+    )
+    damaged = sum(1 for row in rows if row[6] == "Hư hỏng")
+    return ReportResult(
+        title=f"Sách cần xem xét thanh lý - {period.label}",
+        columns=["Mã sách", "ISBN", "Tên sách", "Kệ", "Vị trí", "Lần mượn cuối", "Lý do"],
+        keys=keys,
+        rows=rows,
+        period=(start, end),
+        summary=f"{len(rows)} cuốn cần xem xét: {damaged} hư hỏng, {len(rows) - damaged} không có độc giả mượn",
+    )
+
+
+SUMMARY_LABELS = {
+    "KY": "Kỳ báo cáo",
+    "TUNGAY": "Từ ngày",
+    "DENNGAY": "Đến ngày",
+    "NGAYCHOT": "Số liệu quá hạn tính đến",
+    "SOPHIEUMUON": "Số phiếu mượn",
+    "SOLUOTMUON": "Số lượt mượn sách",
+    "SODOCGIAMUON": "Số độc giả mượn",
+    "SOLUOTTRA": "Số lượt trả sách",
+    "SOLUOTTRATRE": "Số lượt trả trễ",
+    "TIENPHATTRATRE": "Tiền phạt trả trễ (đ)",
+    "SOSACHQUAHAN_CUOIKY": "Sách quá hạn cuối kỳ",
+    "SODOCGIAQUAHAN_CUOIKY": "Độc giả quá hạn cuối kỳ",
+    "TIENPHATQUAHAN_CUOIKY": "Tiền phạt quá hạn chưa thu (đ)",
+}
+
+
+def period_summary(period: Period) -> ReportResult:
+    keys, rows = _fetch(
+        "EXEC dbo.sp_ThongKe_TheoKy @Nam = ?, @Thang = ?, @Quy = ?",
+        (period.year, period.month, period.quarter),
+    )
+    values = rows[0] if rows else ()
+    pivot = [(SUMMARY_LABELS.get(key, key), value) for key, value in zip(keys, values)]
+    return ReportResult(
+        title=f"Thống kê tổng hợp - {period.label}",
+        columns=["Chỉ tiêu", "Giá trị"],
+        keys=["CHITIEU", "GIATRI"],
+        rows=pivot,
+        period=period.bounds,
+    )
+
+
+def format_value(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        if getattr(value, "hour", 0) or getattr(value, "minute", 0):
+            return value.strftime("%d/%m/%Y %H:%M")
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, bool):
+        return "Có" if value else "Không"
+    return str(value)
+
+
+def export_csv(result: ReportResult, path: str | Path) -> Path:
+    """Ghi báo cáo ra CSV UTF-8 có BOM để Excel hiển thị đúng tiếng Việt."""
+    path = Path(path)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([result.title])
+        if result.summary:
+            writer.writerow([result.summary])
+        writer.writerow([])
+        writer.writerow(result.columns)
+        for row in result.rows:
+            writer.writerow([format_value(value) for value in row])
+    return path

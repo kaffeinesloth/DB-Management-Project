@@ -426,6 +426,13 @@ class AccountScreen(ctk.CTkFrame):
             except (pyodbc.Error, ValueError) as error:
                 messagebox.showerror("Không thể tạo", _friendly_db_error(error), parent=dialog)
                 return
+            except Exception:
+                messagebox.showerror(
+                    "Không thể tạo",
+                    "Không thể tạo nhân viên và tài khoản. Vui lòng thử lại.",
+                    parent=dialog,
+                )
+                return
             dialog.destroy()
             self.refresh_accounts()
             if self.tree.exists(str(employee_id)):

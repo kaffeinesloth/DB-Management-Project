@@ -14,6 +14,17 @@ from account_management.account_screen import AccountScreen
 from database import CURRENT_SESSION, clear_session
 
 
+VALID_DASHBOARD_ROLES = {"THUTHU", "QUANLY"}
+
+
+def require_dashboard_role(current_user: Dict[str, Any]) -> str:
+    """Return an exact authorized role or reject the session."""
+    role_name = str(current_user.get("RoleName") or "").strip().upper()
+    if role_name not in VALID_DASHBOARD_ROLES:
+        raise ValueError("Tài khoản không có nhóm quyền hợp lệ.")
+    return role_name
+
+
 class MainDashboard(ctk.CTk):
     """
     Cửa sổ chính Hệ Thống Quản Lý Thư Viện:
@@ -25,8 +36,10 @@ class MainDashboard(ctk.CTk):
     """
 
     def __init__(self, current_user: Optional[Dict[str, Any]] = None, on_logout=None):
+        resolved_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        require_dashboard_role(resolved_user)  # reject unknown roles before any window opens
         super().__init__()
-        self.current_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        self.current_user = resolved_user  # self.role_name (property) reads the validated role
         self.on_logout = on_logout
 
         # Thiết lập cửa sổ

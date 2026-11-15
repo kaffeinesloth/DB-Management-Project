@@ -1,265 +1,241 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+"""Báo cáo thống kê: thẻ KPI, độc giả quá hạn, tần suất sử dụng sách,
+sách cần xem xét thanh lý và thống kê tổng hợp theo tháng / quý / năm."""
+
+from datetime import date
+from tkinter import filedialog, ttk
+from typing import Any, Dict, Optional
+
 import customtkinter as ctk
-from typing import Dict, Any, Optional
-from reports.report_actions import ReportActions, ThongKeDAO
+import pyodbc
+
 from database import CURRENT_SESSION
+from reports import report_actions as actions
+from reports import report_print
+
+
+TABS = ("Độc giả quá hạn", "Tần suất sử dụng", "Sách cần xem xét", "Thống kê tổng hợp")
+PERIOD_TYPES = ("Tháng", "Quý", "Năm")
+KPI_COLOR = "#3B82F6"
+ERROR_COLOR = ("#b3261e", "#f2b8b5")
+TEXT_COLOR = ("gray10", "gray90")
 
 
 class ReportScreen(ctk.CTkFrame):
-    """
-    Giao diện Báo Cáo Thống Kê:
-    - 4 Thẻ chỉ số tổng quan (KPI Cards) đo lường tình trạng thư viện.
-    - Chuyển đổi linh hoạt giữa 2 Báo cáo chuyên sâu:
-      1. Danh sách độc giả mượn sách quá hạn và tiền phạt ước tính.
-      2. Tần suất mượn sách theo từng đầu sách (xếp hạng nhiều nhất / ít nhất).
-    - Hỗ trợ làm mới dữ liệu tức thì.
-    """
-
-    def __init__(self, master, current_user: Optional[Dict[str, Any]] = None):
+    def __init__(self, master, current_user: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(master, fg_color="transparent")
         self.current_user = current_user or CURRENT_SESSION.get("user_info") or {}
+        self._result: actions.ReportResult | None = None
+        today = date.today()
 
-        self.setup_ui()
-        self.load_data()
+        self._build_kpi_cards()
 
-    def setup_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        controls = ctk.CTkFrame(self, fg_color="transparent")
+        controls.pack(fill="x", padx=12, pady=(4, 6))
 
-        # 1. Hàng trên: 4 Thẻ chỉ số KPI
-        self.create_kpi_cards()
-
-        # 2. Hàng dưới: Bảng báo cáo chuyên sâu
-        self.create_report_section()
-
-    def create_kpi_cards(self):
-        cards_container = ctk.CTkFrame(self, fg_color="transparent")
-        cards_container.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
-        for i in range(4):
-            cards_container.grid_columnconfigure(i, weight=1)
-
-        # Đồng bộ 1 màu xanh dương (#3B82F6) duy nhất cho toàn bộ các thẻ KPI
-        UNIFIED_COLOR = "#3B82F6"
-
-        # Card 1: Tổng Đầu Sách
-        self.card1 = self.create_card(cards_container, 0, "Tổng Đầu Sách (ISBN)", "0", UNIFIED_COLOR)
-
-        # Card 2: Cuốn Sách / Đang Mượn
-        self.card2 = self.create_card(cards_container, 1, "Cuốn Sách (Kho / Mượn)", "0 / 0", UNIFIED_COLOR)
-
-        # Card 3: Độc Giả Hoạt Động
-        self.card3 = self.create_card(cards_container, 2, "Độc Giả Đang Hoạt Động", "0 thẻ", UNIFIED_COLOR)
-
-        # Card 4: Sách Quá Hạn & Tiền Phạt
-        self.card4 = self.create_card(cards_container, 3, "Sách Quá Hạn (Phạt dự kiến)", "0 cuốn (0 đ)", UNIFIED_COLOR)
-
-    def create_card(self, parent, col, title, initial_value, border_color):
-        card = ctk.CTkFrame(
-            parent, 
-            corner_radius=10, 
-            border_width=2, 
-            border_color=border_color,
-            fg_color=("#F3F4F6", "#1F2937")
+        ctk.CTkLabel(controls, text="Kỳ báo cáo").pack(side="left", padx=(0, 6))
+        self.period_type = ctk.CTkSegmentedButton(
+            controls, values=list(PERIOD_TYPES), command=self._on_period_type
         )
-        card.grid(row=0, column=col, padx=6, pady=5, sticky="ew")
+        self.period_type.set("Quý")
+        self.period_type.pack(side="left", padx=(0, 8))
 
-        lbl_t = ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=12), text_color="#9CA3AF")
-        lbl_t.pack(pady=(12, 4), padx=12, anchor="w")
+        self.period_value = ctk.CTkOptionMenu(controls, width=90, values=["Q1"])
+        self.period_value.pack(side="left", padx=(0, 8))
 
-        lbl_v = ctk.CTkLabel(card, text=initial_value, font=ctk.CTkFont(size=18, weight="bold"))
-        lbl_v.pack(pady=(0, 12), padx=12, anchor="w")
+        years = [str(year) for year in range(today.year - 5, today.year + 2)]
+        self.year = ctk.CTkOptionMenu(controls, width=90, values=years)
+        self.year.set(str(today.year))
+        self.year.pack(side="left", padx=(0, 12))
 
-        return lbl_v
-
-    def create_report_section(self):
-        container = ctk.CTkFrame(self, corner_radius=12)
-        container.grid(row=1, column=0, padx=10, pady=(5, 10), sticky="nsew")
-        container.grid_rowconfigure(2, weight=1)
-        container.grid_columnconfigure(0, weight=1)
-
-        # Header điều khiển
-        header_frame = ctk.CTkFrame(container, fg_color="transparent")
-        header_frame.grid(row=0, column=0, padx=15, pady=(15, 10), sticky="ew")
-
-        lbl_title = ctk.CTkLabel(
-            header_frame, 
-            text="CHI TIẾT BÁO CÁO THỐNG KÊ", 
-            font=ctk.CTkFont(size=18, weight="bold")
+        ctk.CTkButton(controls, text="Xem báo cáo", width=120, command=self.refresh).pack(
+            side="left", padx=(0, 8)
         )
-        lbl_title.pack(side="left")
-
-        btn_refresh = ctk.CTkButton(
-            header_frame, 
-            text="Làm mới báo cáo", 
-            width=120, 
-            height=36,
-            fg_color="#4B5563",
-            hover_color="#374151",
-            command=self.load_data
+        self.export_button = ctk.CTkButton(
+            controls, text="Xuất CSV", width=110, state="disabled", command=self.export
         )
-        btn_refresh.pack(side="right")
-
-        # Nút chuyển đổi 2 báo cáo
-        control_frame = ctk.CTkFrame(container, fg_color="transparent")
-        control_frame.grid(row=1, column=0, padx=15, pady=(0, 10), sticky="ew")
-
-        self.seg_report = ctk.CTkSegmentedButton(
-            control_frame,
-            values=["Độc Giả Mượn Quá Hạn", "Tần Suất Sử Dụng Đầu Sách"],
-            command=self.switch_report,
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=36
+        self.export_button.pack(side="left", padx=(0, 8))
+        self.print_button = ctk.CTkButton(
+            controls, text="In báo cáo", width=110, state="disabled", command=self.print_report
         )
-        self.seg_report.set("Độc Giả Mượn Quá Hạn")
-        self.seg_report.pack(side="left")
+        self.print_button.pack(side="left")
 
-        self.lbl_report_summary = ctk.CTkLabel(
-            control_frame,
-            text="",
-            font=ctk.CTkFont(size=12),
-            text_color="#9CA3AF"
+        self._on_period_type("Quý", initial_month=today.month)
+
+        self.tabs = ctk.CTkTabview(self, command=self.run_report)
+        self.tabs.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        self.tables: dict[str, ttk.Treeview] = {}
+        for name in TABS:
+            self.tables[name] = self._make_table(self.tabs.add(name))
+
+        self.status = ctk.CTkLabel(self, text="", anchor="w", justify="left")
+        self.status.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.after(50, self.refresh)
+
+    # ----- KPI cards --------------------------------------------------------
+
+    def _build_kpi_cards(self) -> None:
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=6, pady=(10, 4))
+        titles = (
+            "Tổng đầu sách (ISBN)",
+            "Cuốn sách (kho / đang mượn)",
+            "Độc giả đang hoạt động",
+            "Sách quá hạn hôm nay (phạt)",
         )
-        self.lbl_report_summary.pack(side="right")
+        self.kpi_values: list[ctk.CTkLabel] = []
+        for column, title in enumerate(titles):
+            row.grid_columnconfigure(column, weight=1)
+            card = ctk.CTkFrame(
+                row, corner_radius=10, border_width=2, border_color=KPI_COLOR,
+                fg_color=("#F3F4F6", "#1F2937"),
+            )
+            card.grid(row=0, column=column, padx=6, pady=4, sticky="ew")
+            ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=12), text_color="#9CA3AF").pack(
+                padx=12, pady=(10, 2), anchor="w"
+            )
+            value = ctk.CTkLabel(card, text="-", font=ctk.CTkFont(size=18, weight="bold"))
+            value.pack(padx=12, pady=(0, 10), anchor="w")
+            self.kpi_values.append(value)
 
-        # Container cho bảng Treeview
-        tree_container = ctk.CTkFrame(container, fg_color="#1E2229", corner_radius=8)
-        tree_container.grid(row=2, column=0, padx=15, pady=(0, 15), sticky="nsew")
-        tree_container.grid_rowconfigure(0, weight=1)
-        tree_container.grid_columnconfigure(0, weight=1)
+    def _load_kpis(self) -> None:
+        data = actions.overview()
+        fine = f"{int(data['TienPhatUocTinh']):,} đ".replace(",", ".")
+        texts = (
+            str(data["TongDauSach"]),
+            f"{data['TongCuonSach']} / {data['DangMuon']}",
+            f"{data['DocGiaHoatDong']} thẻ",
+            f"{data['SoQuaHan']} cuốn ({fine})",
+        )
+        for label, text in zip(self.kpi_values, texts):
+            label.configure(text=text)
 
-        self.style = ttk.Style()
-        self.style.theme_use("clam")
+    # ----- period selection -------------------------------------------------
 
-        self.tree = ttk.Treeview(tree_container, show="headings", selectmode="browse")
-
-        self.tree.tag_configure("oddrow", background="#1E2229", foreground="#F3F4F6")
-        self.tree.tag_configure("evenrow", background="#242830", foreground="#F3F4F6")
-        self.tree.tag_configure("overdue_alert", background="#382226", foreground="#F87171") # Đỏ cảnh báo
-
-        vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(tree_container, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-
-    def load_data(self):
-        # 1. Cập nhật các thẻ KPI
-        try:
-            overview = ThongKeDAO.get_tong_quan()
-            self.card1.configure(text=f"{overview['TongDauSach']} đầu sách")
-            self.card2.configure(text=f"{overview['TongCuonSach']} cuốn ({overview['DangMuon']} đang mượn)")
-            self.card3.configure(text=f"{overview['DocGiaHoatDong']} thẻ")
-            self.card4.configure(text=f"{overview['SoQuaHan']} cuốn ({overview['TienPhatUocTinh']:,} đ)")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            print("Lỗi tải KPI:", ex)
-
-        # 2. Hiển thị báo cáo đang chọn
-        self.switch_report(self.seg_report.get())
-
-    def switch_report(self, report_name):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        if report_name == "Độc Giả Mượn Quá Hạn":
-            self.display_report_qua_han()
+    def _on_period_type(self, value: str, initial_month: int | None = None) -> None:
+        month = initial_month or date.today().month
+        if value == "Tháng":
+            self.period_value.configure(values=[str(m) for m in range(1, 13)], state="normal")
+            self.period_value.set(str(month))
+        elif value == "Quý":
+            self.period_value.configure(values=[f"Q{q}" for q in range(1, 5)], state="normal")
+            self.period_value.set(f"Q{(month - 1) // 3 + 1}")
         else:
-            self.display_report_tan_suat()
+            self.period_value.configure(values=["-"], state="disabled")
+            self.period_value.set("-")
 
-    def display_report_qua_han(self):
-        columns = (
-            "MADG", "HoTenDG", "DIENTHOAI", "MASACH", "TENSACH",
-            "HinhThuc", "NgayMuonStr", "SoNgayTre", "TienPhatUocTinh"
-        )
-        self.tree.configure(columns=columns)
+    def selected_period(self) -> actions.Period:
+        year = int(self.year.get())
+        kind = self.period_type.get()
+        if kind == "Tháng":
+            return actions.Period(year, month=int(self.period_value.get()))
+        if kind == "Quý":
+            return actions.Period(year, quarter=int(self.period_value.get().lstrip("Q")))
+        return actions.Period(year)
 
-        col_configs = {
-            "MADG": ("Mã ĐG", 60, "center"),
-            "HoTenDG": ("Họ Tên Độc Giả", 150, "w"),
-            "DIENTHOAI": ("Điện Thoại", 100, "center"),
-            "MASACH": ("Mã Sách", 80, "center"),
-            "TENSACH": ("Tên Đầu Sách", 200, "w"),
-            "HinhThuc": ("Hình Thức", 90, "center"),
-            "NgayMuonStr": ("Ngày Mượn", 90, "center"),
-            "SoNgayTre": ("Trễ Hạn (ngày)", 100, "center"),
-            "TienPhatUocTinh": ("Tiền Phạt Dự Kiến (VNĐ)", 140, "e")
-        }
+    # ----- table ------------------------------------------------------------
 
-        for col, (heading, width, align) in col_configs.items():
-            self.tree.heading(col, text=heading, anchor=align)
-            self.tree.column(col, width=width, minwidth=50, anchor=align)
+    def _make_table(self, parent) -> ttk.Treeview:
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="both", expand=True)
+        table = ttk.Treeview(frame, show="headings")
+        vertical = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
+        horizontal = ttk.Scrollbar(frame, orient="horizontal", command=table.xview)
+        table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        table.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        return table
 
+    def _fill_table(self, table: ttk.Treeview, result: actions.ReportResult) -> None:
+        table.delete(*table.get_children())
+        table.configure(columns=result.columns)
+        wide_columns = ("Tên sách", "Độc giả", "Email", "Chỉ tiêu", "Thể loại")
+        for column in result.columns:
+            wide = column in wide_columns
+            table.heading(column, text=column, anchor="w")
+            table.column(column, width=220 if wide else 105, minwidth=60, stretch=wide, anchor="w")
+        for row in result.rows:
+            table.insert("", "end", values=[actions.format_value(value) for value in row])
+
+    # ----- actions ----------------------------------------------------------
+
+    def refresh(self) -> None:
+        """Reload the KPI cards and the report on the open tab."""
         try:
-            records = ThongKeDAO.get_doc_gia_qua_han()
-            for idx, r in enumerate(records):
-                phat_str = f"{r.get('TienPhatUocTinh', 0):,}"
-                tag = "overdue_alert" if r.get("SoNgayTre", 0) > 0 else ("oddrow" if idx % 2 != 0 else "evenrow")
+            self._load_kpis()
+        except (pyodbc.Error, RuntimeError, ValueError) as error:
+            self._show_error(f"Không tải được số liệu tổng quan: {error}")
+            return
+        self.run_report()
 
-                self.tree.insert("", "end", values=(
-                    r.get("MADG"),
-                    r.get("HoTenDG"),
-                    r.get("DIENTHOAI") or "",
-                    r.get("MASACH"),
-                    r.get("TENSACH"),
-                    r.get("HinhThuc"),
-                    r.get("NgayMuonStr"),
-                    f"{r.get('SoNgayTre', 0)} ngày",
-                    phat_str
-                ), tags=(tag,))
-
-            self.lbl_report_summary.configure(text=f"Có {len(records)} lượt mượn sách bị trễ hạn")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi CSDL", f"Không thể tải báo cáo quá hạn:\n{ex}")
-
-    def display_report_tan_suat(self):
-        columns = (
-            "ISBN", "TENSACH", "TheLoai", "GiaBia",
-            "TongSoCuon", "SoCuonSanCo", "SoLuotMuon"
-        )
-        self.tree.configure(columns=columns)
-
-        col_configs = {
-            "ISBN": ("Mã ISBN", 95, "center"),
-            "TENSACH": ("Tên Đầu Sách", 230, "w"),
-            "TheLoai": ("Thể Loại", 130, "w"),
-            "GiaBia": ("Giá Bìa (VNĐ)", 100, "e"),
-            "TongSoCuon": ("Tổng Số Cuốn", 100, "center"),
-            "SoCuonSanCo": ("Sẵn Có Trong Kho", 110, "center"),
-            "SoLuotMuon": ("Số Lượt Mượn", 110, "center")
-        }
-
-        for col, (heading, width, align) in col_configs.items():
-            self.tree.heading(col, text=heading, anchor=align)
-            self.tree.column(col, width=width, minwidth=50, anchor=align)
-
+    def run_report(self) -> None:
+        tab = self.tabs.get()
         try:
-            records = ThongKeDAO.get_tan_suat_muon_sach()
-            for idx, r in enumerate(records):
-                gia_str = f"{r.get('GiaBia', 0):,}"
-                tag = "oddrow" if idx % 2 != 0 else "evenrow"
+            period = self.selected_period()
+            if tab == TABS[0]:
+                result = actions.overdue_readers(period.as_of())
+            elif tab == TABS[1]:
+                result = actions.usage_frequency(period)
+            elif tab == TABS[2]:
+                result = actions.stock_review(period)
+            else:
+                result = actions.period_summary(period)
+        except ValueError as error:
+            self._show_error(str(error))
+            return
+        except (pyodbc.Error, RuntimeError) as error:
+            self._show_error(f"Không tải được báo cáo: {error}")
+            return
 
-                self.tree.insert("", "end", values=(
-                    r.get("ISBN"),
-                    r.get("TENSACH"),
-                    r.get("TheLoai"),
-                    gia_str,
-                    r.get("TongSoCuon"),
-                    r.get("SoCuonSanCo"),
-                    r.get("SoLuotMuon")
-                ), tags=(tag,))
+        self._result = result
+        self._fill_table(self.tables[tab], result)
+        self.export_button.configure(state="normal")
+        self.print_button.configure(state="normal")
+        text = result.title + (f"  -  {result.summary}" if result.summary else "")
+        if not result.rows:
+            text += "  -  không có dữ liệu"
+        self.status.configure(text=text, text_color=TEXT_COLOR)
 
-            self.lbl_report_summary.configure(text=f"Thống kê trên {len(records)} đầu sách trong thư viện")
-        except ValueError as ve:
-            messagebox.showwarning("Cảnh báo", str(ve))
-        except Exception as ex:
-            messagebox.showerror("Lỗi CSDL", f"Không thể tải báo cáo tần suất:\n{ex}")
+    def export(self) -> None:
+        if self._result is None:
+            return
+        default_name = self._result.title.replace("/", "-").replace(" ", "_") + ".csv"
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("Tệp CSV", "*.csv")],
+        )
+        if not path:
+            return
+        try:
+            saved = actions.export_csv(self._result, path)
+        except OSError as error:
+            self._show_error(f"Không lưu được tệp: {error}")
+            return
+        self.status.configure(text=f"Đã lưu {saved}", text_color=TEXT_COLOR)
 
+    def print_report(self) -> None:
+        """Mở bản in A4 (tiêu đề, STT, ngày lập tại TP.HCM, người lập) trong trình duyệt."""
+        if self._result is None:
+            return
+        user = self.current_user or {}
+        creator = user.get("HoTen") or user.get("LoginName") or ""
+        try:
+            path = report_print.open_print_preview(self._result, creator, user.get("MANV"))
+        except OSError as error:
+            self._show_error(f"Không tạo được bản in: {error}")
+            return
+        self.status.configure(
+            text=f"Đã mở bản in trong trình duyệt (Ctrl+P để in / lưu PDF): {path}",
+            text_color=TEXT_COLOR,
+        )
 
-# Bí danh tương thích
-TabThongKe = ReportScreen
+    def _show_error(self, message: str) -> None:
+        self._result = None
+        self.export_button.configure(state="disabled")
+        self.print_button.configure(state="disabled")
+        self.status.configure(text=message, text_color=ERROR_COLOR)

@@ -177,5 +177,75 @@ BEGIN
 END;
 
 SELECT N'PASS' AS Result, N'Overdue fine and frequency reports' AS TestName;
+/* Reports & Statistics (06_reports.sql). Dates are fixed so results do not
+   depend on the day the test runs. */
+
+/* As of 2026-09-10 only S0003 (borrowed 2026-08-05, due 2026-09-04) is out. */
+IF (SELECT COUNT(*) FROM dbo.fn_BaoCao_QuaHan('2026-09-10')) <> 1
+   OR NOT EXISTS
+   (
+       SELECT 1 FROM dbo.fn_BaoCao_QuaHan('2026-09-10')
+       WHERE MASACH = 'S0003' AND SONGAYQUAHAN = 6 AND TIENPHAT = 3000
+   )
+BEGIN
+    ;THROW 50209, 'The as-of overdue report is incorrect for 2026-09-10.', 1;
+END;
+
+/* As of 2026-11-10: S0002 and S0005 are 10 days late, S0011 is 8 days late. */
+IF (SELECT COUNT(*) FROM dbo.fn_BaoCao_QuaHan('2026-11-10')) <> 3
+   OR (SELECT SUM(TIENPHAT) FROM dbo.fn_BaoCao_QuaHan('2026-11-10')) <> 14000
+BEGIN
+    ;THROW 50210, 'The as-of overdue report is incorrect for 2026-11-10.', 1;
+END;
+
+/* Q3 2026 had 8 loan lines across 8 titles; all 15 titles are listed. */
+IF (SELECT COUNT(*) FROM dbo.fn_BaoCao_TanSuat('2026-07-01', '2026-09-30')) <> 15
+   OR (SELECT SUM(SOLUOTMUON) FROM dbo.fn_BaoCao_TanSuat('2026-07-01', '2026-09-30')) <> 8
+BEGIN
+    ;THROW 50211, 'The period book-frequency report is incorrect.', 1;
+END;
+
+/* 2026 stock review: 18 copies, including damaged S0006. */
+IF (SELECT COUNT(*) FROM dbo.fn_BaoCao_SachCanXemXet('2026-01-01', '2026-12-31')) <> 18
+   OR NOT EXISTS
+   (
+       SELECT 1 FROM dbo.fn_BaoCao_SachCanXemXet('2026-01-01', '2026-12-31')
+       WHERE MASACH = 'S0006' AND LYDO = N'Hư hỏng'
+   )
+BEGIN
+    ;THROW 50212, 'The stock-review report is incorrect.', 1;
+END;
+
+DECLARE @Summary TABLE
+(
+    KY NVARCHAR(20), TUNGAY DATE, DENNGAY DATE, NGAYCHOT DATE,
+    SOPHIEUMUON INT, SOLUOTMUON INT, SODOCGIAMUON INT, SOLUOTTRA INT,
+    SOLUOTTRATRE INT, TIENPHATTRATRE BIGINT, SOSACHQUAHAN_CUOIKY INT,
+    SODOCGIAQUAHAN_CUOIKY INT, TIENPHATQUAHAN_CUOIKY BIGINT
+);
+
+INSERT INTO @Summary EXEC dbo.sp_ThongKe_TheoKy @Nam = 2026, @Quy = 3;
+
+IF NOT EXISTS
+(
+    SELECT 1 FROM @Summary
+    WHERE TUNGAY = '2026-07-01' AND DENNGAY = '2026-09-30'
+      AND SOPHIEUMUON = 7 AND SOLUOTMUON = 8 AND SODOCGIAMUON = 7
+      AND SOLUOTTRA = 7 AND SOLUOTTRATRE = 1 AND TIENPHATTRATRE = 4000
+      AND SOSACHQUAHAN_CUOIKY = 0
+)
+BEGIN
+    ;THROW 50213, 'The Q3 2026 period summary is incorrect.', 1;
+END;
+
+BEGIN TRY
+    EXEC dbo.sp_ThongKe_TheoKy @Nam = 2026, @Thang = 1, @Quy = 1;
+    ;THROW 50214, 'The period summary accepted both a month and a quarter.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 50301 THROW;
+END CATCH;
+
+SELECT N'PASS' AS Result, N'Reports and statistics' AS TestName;
 SELECT N'ALL_DATABASE_SMOKE_TESTS_PASSED' AS Result;
 GO
