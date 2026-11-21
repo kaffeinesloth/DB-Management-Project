@@ -29,6 +29,14 @@ GO
 USE [LibraryManagement];
 GO
 
+/*
+    Avoid 1000-value jumps in INT IDENTITY columns when the SQL Server Docker
+    container restarts and discards an unused identity-cache block. Small gaps
+    caused by rolled-back inserts can still occur, which is normal.
+*/
+ALTER DATABASE SCOPED CONFIGURATION SET IDENTITY_CACHE = OFF;
+GO
+
 /* Required by SQL Server for filtered indexes and persisted object metadata. */
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;

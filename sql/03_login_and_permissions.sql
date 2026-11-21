@@ -125,9 +125,10 @@ GO
 
 /* ============================================================
    Teacher's Security & Roles Requirements:
-   - Server Logins belong only to valid NHANVIEN rows.
-   - Database Roles: QUANLY, THUTHU
-   - Database Users: [1], [2], [3], [4]
+   - Employee logins belong to valid NHANVIEN rows.
+   - Shared reader login [docgia] is SELECT-only for catalogue lookup.
+   - Database Roles: QUANLY, THUTHU, DOCGIA
+   - Employee Database Users: [1], [2], [3], [4]
    - Stored Procedure: dbo.sp_LayThongTinNhanVien
    ============================================================ */
 
@@ -154,6 +155,11 @@ IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'nv_nam')
 ELSE
     ALTER LOGIN [nv_nam] WITH PASSWORD = '123456', DEFAULT_DATABASE = [LibraryManagement];
 
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = 'docgia')
+    CREATE LOGIN [docgia] WITH PASSWORD = '123456', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = [LibraryManagement];
+ELSE
+    ALTER LOGIN [docgia] WITH PASSWORD = '123456', DEFAULT_DATABASE = [LibraryManagement];
+
 GO
 
 USE [LibraryManagement];
@@ -165,6 +171,38 @@ IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'QUANLY' AND t
 
 IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'THUTHU' AND type = 'R')
     CREATE ROLE THUTHU;
+
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'DOCGIA' AND type = 'R')
+    CREATE ROLE DOCGIA;
+
+GO
+
+CREATE OR ALTER VIEW dbo.v_TraCuuSachDocGia
+AS
+SELECT
+    s.MASACH,
+    RTRIM(i.ISBN) AS ISBN,
+    i.TENSACH,
+    ISNULL(author_list.TACGIA, N'Chưa cập nhật') AS TACGIA,
+    tl.THELOAI,
+    nn.NGONNGU,
+    i.NHAXB,
+    CAST(CASE WHEN s.CHOMUON = 0 AND s.TINHTRANG = 1 THEN 1 ELSE 0 END AS BIT) AS COSAN,
+    nt.KE,
+    nt.MOTA AS VITRI
+FROM dbo.SACH AS s
+JOIN dbo.ISBN AS i ON i.ISBN = s.ISBN
+JOIN dbo.THELOAI AS tl ON tl.MATL = i.MATL
+JOIN dbo.NGONNGU AS nn ON nn.MANGONNGU = i.MANGONNGU
+JOIN dbo.NGANTU AS nt ON nt.MANGANTU = s.MANGANTU
+OUTER APPLY
+(
+    SELECT STRING_AGG(tg.HOTENTG, N', ') WITHIN GROUP (ORDER BY tg.HOTENTG) AS TACGIA
+    FROM dbo.TACGIA_SACH AS tgs
+    JOIN dbo.TACGIA AS tg ON tg.MATACGIA = tgs.MATACGIA
+    WHERE tgs.ISBN = i.ISBN
+) AS author_list;
+GO
 
 -- 2. Permissions
 GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON SCHEMA::dbo TO QUANLY;
@@ -182,6 +220,9 @@ GRANT SELECT ON dbo.NGANTU TO THUTHU;
 GRANT SELECT ON dbo.NGONNGU TO THUTHU;
 GRANT SELECT ON dbo.NHANVIEN TO THUTHU;
 GRANT SELECT ON dbo.v_ChiTietPhieuMuon_Phat TO THUTHU;
+
+GRANT CONNECT TO DOCGIA;
+GRANT SELECT ON dbo.v_TraCuuSachDocGia TO DOCGIA;
 
 GO
 
@@ -260,17 +301,25 @@ GO
 USE [master];
 GO
 IF SUSER_ID(N'nv_mai') IS NOT NULL DROP LOGIN [nv_mai];
-IF SUSER_ID(N'docgia') IS NOT NULL DROP LOGIN [docgia];
 GO
 
 USE [LibraryManagement];
 GO
-IF DATABASE_PRINCIPAL_ID(N'DOCGIA') IS NOT NULL
-   AND NOT EXISTS (
-       SELECT 1 FROM sys.database_role_members
-       WHERE role_principal_id = DATABASE_PRINCIPAL_ID(N'DOCGIA')
-   )
-    DROP ROLE [DOCGIA];
+-- Database principals share one case-insensitive namespace, so the user cannot
+-- also be named DOCGIA while the DOCGIA role exists. Keep the required server
+-- login [docgia] and map it to a distinct database user.
+IF DATABASE_PRINCIPAL_ID(N'shared_docgia') IS NULL
+    CREATE USER [shared_docgia] FOR LOGIN [docgia];
+ELSE
+    ALTER USER [shared_docgia] WITH LOGIN = [docgia];
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.database_role_members rm
+    JOIN sys.database_principals r ON r.principal_id = rm.role_principal_id
+    JOIN sys.database_principals u ON u.principal_id = rm.member_principal_id
+    WHERE r.name = N'DOCGIA' AND u.name = N'shared_docgia'
+)
+    ALTER ROLE [DOCGIA] ADD MEMBER [shared_docgia];
 GO
 
 -- 4. Stored Procedures
@@ -300,11 +349,25 @@ BEGIN
     INNER JOIN sys.database_principals r ON rm.role_principal_id = r.principal_id
     INNER JOIN sys.database_principals u ON rm.member_principal_id = u.principal_id
     WHERE u.name = @DBUserName
-      AND r.name IN (N'QUANLY', N'THUTHU')
+      AND r.name IN (N'QUANLY', N'THUTHU', N'DOCGIA')
     ORDER BY CASE 
         WHEN r.name = 'QUANLY' THEN 1 
-        WHEN r.name = 'THUTHU' THEN 2 
+        WHEN r.name = 'THUTHU' THEN 2
+        WHEN r.name = 'DOCGIA' THEN 3
         ELSE 3 END;
+
+    IF @DBUserName = N'shared_docgia' AND @RoleName = N'DOCGIA'
+    BEGIN
+        SELECT
+            @LoginName AS LoginName,
+            @DBUserName AS UserName,
+            @RoleName AS RoleName,
+            CAST(NULL AS INT) AS MANV,
+            N'Độc giả tra cứu' AS HoTen,
+            N'' AS Email,
+            N'Độc giả' AS VaiTro;
+        RETURN;
+    END;
 
     DECLARE @MANV INT = TRY_CAST(@DBUserName AS INT);
 
@@ -331,13 +394,16 @@ WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @CurrentLogin NVARCHAR(100) = SUSER_SNAME();
+    -- EXECUTE AS OWNER is needed for metadata visibility, so SUSER_SNAME()
+    -- would resolve the impersonated owner. ORIGINAL_LOGIN() always identifies
+    -- the SQL login that opened the connection.
+    DECLARE @CurrentLogin NVARCHAR(100) = ORIGINAL_LOGIN();
     EXEC dbo.sp_LayThongTinNhanVien @LoginName = @CurrentLogin;
 END;
 GO
 
-GRANT EXECUTE ON dbo.sp_LayThongTinNhanVien TO QUANLY, THUTHU;
-GRANT EXECUTE ON dbo.sp_LayThongTinHienTai TO QUANLY, THUTHU;
+GRANT EXECUTE ON dbo.sp_LayThongTinNhanVien TO QUANLY, THUTHU, DOCGIA;
+GRANT EXECUTE ON dbo.sp_LayThongTinHienTai TO QUANLY, THUTHU, DOCGIA;
 GO
 
 /* ============================================================

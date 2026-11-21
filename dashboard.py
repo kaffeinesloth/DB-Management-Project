@@ -11,10 +11,11 @@ from borrowing_and_returns.borrowing_screen import BorrowingScreen
 from reports.report_screen import ReportScreen
 from backup_and_restore.backup_screen import BackupScreen
 from account_management.account_screen import AccountScreen
+from catalog_search.catalog_screen import CatalogSearchScreen
 from database import CURRENT_SESSION, clear_session
 
 
-VALID_DASHBOARD_ROLES = {"THUTHU", "QUANLY"}
+VALID_DASHBOARD_ROLES = {"DOCGIA", "THUTHU", "QUANLY"}
 
 
 def require_dashboard_role(current_user: Dict[str, Any]) -> str:
@@ -33,6 +34,7 @@ class MainDashboard(ctk.CTk):
     - Phân quyền động:
         + Thủ thư (THUTHU): Tab Sách, Độc giả, Mượn/Trả, Báo cáo thống kê.
         + Quản lý (QUANLY): Toàn quyền thêm mới/thanh lý sách và Sao lưu & Phục hồi CSDL.
+        + Độc giả (DOCGIA): Chỉ được tra cứu danh mục sách.
     """
 
     def __init__(self, current_user: Optional[Dict[str, Any]] = None, on_logout=None):
@@ -58,8 +60,8 @@ class MainDashboard(ctk.CTk):
         self.create_content_area()
         self.create_status_bar()
 
-        # Mặc định mở Tab Sách
-        self.select_tab("sach")
+        # Độc giả vào thẳng trang tra cứu; nhân viên vào quản lý sách.
+        self.select_tab("tracuu" if self.role_name == "DOCGIA" else "sach")
 
         # Không cho đóng cửa sổ khi đang BACKUP / RESTORE
         self.protocol("WM_DELETE_WINDOW", self.handle_close)
@@ -129,13 +131,14 @@ class MainDashboard(ctk.CTk):
         )
         lbl_name.pack(anchor="w", padx=12, pady=(10, 2))
 
-        lbl_manv = ctk.CTkLabel(
-            profile_frame,
-            text=f"Mã NV: {self.current_user.get('MANV', 'N/A')}",
-            font=ctk.CTkFont(size=12),
-            text_color="#9CA3AF"
-        )
-        lbl_manv.pack(anchor="w", padx=12, pady=(0, 2))
+        if self.role_name == "DOCGIA":
+            identity_text = "Tài khoản tra cứu dùng chung"
+        else:
+            identity_text = f"Mã NV: {self.current_user.get('MANV', 'N/A')}"
+        ctk.CTkLabel(
+            profile_frame, text=identity_text, font=ctk.CTkFont(size=12),
+            text_color="#9CA3AF",
+        ).pack(anchor="w", padx=12, pady=(0, 2))
 
         lbl_login = ctk.CTkLabel(
             profile_frame, 
@@ -146,7 +149,7 @@ class MainDashboard(ctk.CTk):
         lbl_login.pack(anchor="w", padx=12, pady=(0, 2))
 
         role_name = self.role_name
-        role_color = "#10B981" if role_name == "QUANLY" else "#60A5FA"
+        role_color = {"QUANLY": "#10B981", "THUTHU": "#60A5FA", "DOCGIA": "#F59E0B"}[role_name]
         lbl_role = ctk.CTkLabel(
             profile_frame,
             text=f"Quyền: {role_name}",
@@ -158,7 +161,9 @@ class MainDashboard(ctk.CTk):
         # Các nút chuyển Tab điều hướng theo phân quyền
         self.nav_buttons = {}
 
-        if role_name != "QUANLY":       # fail-closed: anything not QUANLY gets the THUTHU menu
+        if role_name == "DOCGIA":
+            tabs = [("tracuu", "Tra Cứu Sách")]
+        elif role_name == "THUTHU":
             tabs = [
                 ("sach", "Quản Lý Sách"),
                 ("docgia", "Quản Lý Độc Giả"),
@@ -190,17 +195,18 @@ class MainDashboard(ctk.CTk):
             btn.grid(row=idx, column=0, padx=15, pady=4, sticky="ew")
             self.nav_buttons[tab_id] = btn
 
-        # Đổi mật khẩu của chính mình (mọi nhóm quyền)
-        btn_password = ctk.CTkButton(
-            self.sidebar,
-            text="Đổi Mật Khẩu",
-            height=36,
-            fg_color="#0E7490",
-            hover_color="#155E75",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            command=self.open_change_password
-        )
-        btn_password.grid(row=10, column=0, padx=15, pady=(10, 0), sticky="ew")
+        # The shared DOCGIA password is administered centrally, not by students.
+        if role_name != "DOCGIA":
+            btn_password = ctk.CTkButton(
+                self.sidebar,
+                text="Đổi Mật Khẩu",
+                height=36,
+                fg_color="#0E7490",
+                hover_color="#155E75",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                command=self.open_change_password
+            )
+            btn_password.grid(row=10, column=0, padx=15, pady=(10, 0), sticky="ew")
 
         # Nút Đăng Xuất ở góc dưới
         btn_logout = ctk.CTkButton(
@@ -216,18 +222,23 @@ class MainDashboard(ctk.CTk):
 
     @property
     def role_name(self) -> str:
-        """Normalized role; an unknown/missing role is treated as THUTHU (least privilege)."""
-        role = str(self.current_user.get("RoleName") or "").strip().upper()
-        return "QUANLY" if role == "QUANLY" else "THUTHU"
+        """The exact role was validated before the dashboard was created."""
+        return str(self.current_user.get("RoleName") or "").strip().upper()
 
     def create_status_bar(self):
         """StatusStrip ở đáy cửa sổ: Mã NV | Họ tên | Nhóm quyền | Login | CSDL."""
         bar = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color=("#CBD5E1", "#111827"))
         bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        role_label = {"QUANLY": "Quản lý", "THUTHU": "Thủ thư", "DOCGIA": "Độc giả"}[self.role_name]
+        identity = (
+            "Tài khoản dùng chung"
+            if self.role_name == "DOCGIA"
+            else f"Mã NV: {self.current_user.get('MANV', 'N/A')}"
+        )
         items = (
-            f"Mã NV: {self.current_user.get('MANV', 'N/A')}",
+            identity,
             f"Họ tên: {self.current_user.get('HoTen', 'N/A')}",
-            f"Nhóm quyền: {self.role_name} ({'Quản lý' if self.role_name == 'QUANLY' else 'Thủ thư'})",
+            f"Nhóm quyền: {self.role_name} ({role_label})",
             f"Đăng nhập: {self.current_user.get('LoginName', 'N/A')}",
             f"CSDL: {CURRENT_SESSION.get('active_db')} @ {CURRENT_SESSION.get('active_server')}",
         )
@@ -250,7 +261,11 @@ class MainDashboard(ctk.CTk):
         self.main_container.grid_rowconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(0, weight=1)
 
-        if self.role_name != "QUANLY":
+        if self.role_name == "DOCGIA":
+            self.views = {
+                "tracuu": CatalogSearchScreen(self.main_container, self.current_user),
+            }
+        elif self.role_name == "THUTHU":
             self.views = {
                 "sach": BookScreen(self.main_container, self.current_user),
                 "docgia": ReaderScreen(self.main_container, self.current_user),

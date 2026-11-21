@@ -53,8 +53,14 @@ if [[ ! "${backup_file}" =~ ^[A-Za-z0-9._-]+\.bak$ || "${backup_file}" == *..* ]
     exit 2
 fi
 
+if docker compose exec -T sqlserver test -x /opt/mssql-tools18/bin/sqlcmd; then
+    sqlcmd_path=/opt/mssql-tools18/bin/sqlcmd
+else
+    sqlcmd_path=/opt/mssql-tools/bin/sqlcmd
+fi
+
 docker compose exec -T sqlserver \
-    /opt/mssql-tools18/bin/sqlcmd \
+    "${sqlcmd_path}" \
     -S localhost \
     -U sa \
     -C \

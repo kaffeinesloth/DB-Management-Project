@@ -21,9 +21,9 @@ _env_path = Path(__file__).resolve().parent / ".env"
 if load_dotenv is not None and _env_path.exists():
     load_dotenv(_env_path)
 
-# Cấu hình mặc định khớp với compose.yaml ("${MSSQL_PORT:-1433}:1433").
+# Cấu hình mặc định khớp với compose.yaml, chỉ bind SQL Server vào IPv4 loopback.
 MSSQL_PORT = os.environ.get("MSSQL_PORT", "1433")
-SERVER_NAME = os.environ.get("DB_HOST", f"localhost,{MSSQL_PORT}")
+SERVER_NAME = os.environ.get("DB_HOST", f"127.0.0.1,{MSSQL_PORT}")
 DATABASE_NAME = os.environ.get("DB_NAME", "LibraryManagement")
 
 PREFERRED_ODBC_DRIVERS = (
@@ -33,6 +33,7 @@ PREFERRED_ODBC_DRIVERS = (
 )
 
 VALID_EMPLOYEE_ROLES = {"THUTHU", "QUANLY"}
+SHARED_READER_ROLE = "DOCGIA"
 NON_EMPLOYEE_LOGINS = {"sa", "library_app"}
 
 # Thông tin phiên đăng nhập hiện tại (Lưu sau khi xác thực thành công)
@@ -217,7 +218,8 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
     Xác thực đăng nhập trực tiếp qua SQL Server Authentication:
     1. Kết nối vào SQL Server bằng đúng login_name và password của người dùng.
        Ưu tiên máy chủ / CSDL đã cấu hình (.env), sai mật khẩu thì báo lỗi ngay.
-    2. Nếu SQL Server xác thực thành công -> gọi sp_LayThongTinNhanVien với tham số @LoginName.
+    2. Nếu SQL Server xác thực thành công -> gọi sp_LayThongTinHienTai.
+       SQL Server tự lấy ORIGINAL_LOGIN(), không tin tên đăng nhập do client gửi.
     3. Cập nhật vào CURRENT_SESSION để các truy vấn nghiệp vụ sau thực hiện dưới đúng quyền này.
     """
     login_clean = login_name.strip()
@@ -267,10 +269,7 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
 
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "EXEC dbo.sp_LayThongTinNhanVien @LoginName = ?",
-                (login_clean,),
-            )
+            cursor.execute("EXEC dbo.sp_LayThongTinHienTai")
             row = cursor.fetchone()
         except pyodbc.Error as error:
             raise RuntimeError(
@@ -282,26 +281,41 @@ def dang_nhap_he_thong(login_name: str, password: str) -> Dict[str, Any]:
                 "Tài khoản chưa được liên kết với nhân viên hợp lệ."
             )
 
-        role_name = str(row[2] or "").strip().upper()
-        try:
-            employee_id = int(row[3])
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Tài khoản chưa được liên kết với nhân viên hợp lệ."
-            ) from error
-
-        # Valid employee database users are deliberately named with MANV. This
-        # rejects service/admin logins even when an older stored procedure maps
-        # an unknown account to employee 1.
         database_user = str(row[1] or "").strip()
-        if employee_id <= 0 or database_user != str(employee_id):
-            raise ValueError(
-                "Tài khoản chưa được liên kết với nhân viên hợp lệ."
-            )
-        if role_name not in VALID_EMPLOYEE_ROLES:
+        role_name = str(row[2] or "").strip().upper()
+
+        if role_name == SHARED_READER_ROLE:
+            # The teacher requires one shared, SELECT-only catalogue account.
+            # It is not linked to NHANVIEN and must use the exact dedicated
+            # login/database-user identity so no arbitrary principal can enter.
+            if (
+                login_clean.casefold() != "docgia"
+                or database_user.casefold() != "shared_docgia"
+            ):
+                raise ValueError("Tài khoản độc giả dùng chung không hợp lệ.")
+            employee_id = None
+        else:
+            try:
+                employee_id = int(row[3])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "Tài khoản chưa được liên kết với nhân viên hợp lệ."
+                ) from error
+
+            # Valid employee database users are deliberately named with MANV.
+            if employee_id <= 0 or database_user != str(employee_id):
+                raise ValueError(
+                    "Tài khoản chưa được liên kết với nhân viên hợp lệ."
+                )
+
+        if role_name not in VALID_EMPLOYEE_ROLES | {SHARED_READER_ROLE}:
             raise ValueError("Tài khoản không có nhóm quyền hợp lệ.")
 
-        vai_tro = "Quản lý" if role_name == "QUANLY" else "Thủ thư"
+        vai_tro = {
+            "QUANLY": "Quản lý",
+            "THUTHU": "Thủ thư",
+            "DOCGIA": "Độc giả",
+        }[role_name]
         user_info = {
             "LoginName": row[0],
             "UserName": database_user,

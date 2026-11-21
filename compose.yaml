@@ -2,7 +2,7 @@ name: library-management-project-02
 
 services:
   backup-volume-init:
-    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     user: root
     entrypoint: ["/bin/bash", "-c"]
@@ -16,7 +16,7 @@ services:
     restart: "no"
 
   sqlserver:
-    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       backup-volume-init:
@@ -28,7 +28,7 @@ services:
       SQLCMDPASSWORD: ${MSSQL_SA_PASSWORD:-LibraryAdmin_2026!}
       TZ: ${TZ:-Asia/Ho_Chi_Minh}
     ports:
-      - "${MSSQL_PORT:-1433}:1433"
+      - "127.0.0.1:${MSSQL_PORT:-1433}:1433"
     volumes:
       - sqlserver-data:/var/opt/mssql
       - sqlserver-backups:/var/opt/mssql/backups
@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
 
   database-init:
-    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04}
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04}
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     depends_on:
       sqlserver:

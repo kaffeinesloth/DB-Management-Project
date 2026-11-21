@@ -1,8 +1,9 @@
 # Library Management System — Project 02
 
-Project 02 is the shared foundation for the team's final project. It contains a
-verified SQL Server database baseline and a Python/CustomTkinter interface
-scaffold.
+Project 02 is a desktop library-management application built with Python,
+CustomTkinter, SQL Server 2022, and Docker Compose. Docker supplies an isolated,
+reproducible database; the Python program connects to it through Microsoft ODBC
+Driver 18.
 
 ## Current status
 
@@ -10,11 +11,26 @@ scaffold.
 - The physical schema contains exactly the 11 tables required by the teacher.
 - Database constraints, triggers, reporting views, permissions, sample data,
   contract verification, backup/restore, and smoke tests are available.
-- The desktop program opens a navigation dashboard with placeholder screens.
-- The Python login form authenticates valid employees with real SQL Server
-  logins and opens a role-based dashboard for `QUANLY` or `THUTHU`.
-- The remaining feature modules are being implemented independently; consult
-  their screens and action files for their current status.
+- The desktop program includes role-based login, book, reader, loan/return,
+  reporting, account-administration, backup/restore, and reader catalogue
+  screens.
+- Employees authenticate with real SQL Server logins and receive a `QUANLY` or
+  `THUTHU` dashboard. The shared `docgia` login receives read-only catalogue
+  access.
+
+## Quick start
+
+After installing the prerequisites for your operating system:
+
+1. Copy `.env.example` to `.env`.
+2. Start Docker Desktop.
+3. Run `docker compose up -d` from the project root.
+4. Wait until `sqlserver` is healthy and `database-init` has exited with code 0.
+5. Create the Python virtual environment and install `requirements.txt`.
+6. Run `python main.py` on Windows or `python3 main.py` on macOS.
+
+The first Docker startup downloads SQL Server and can take several minutes.
+Later runs reuse the stored database volume and start much faster.
 
 ## 1. Prerequisites
 
@@ -24,44 +40,44 @@ Install on every team computer:
   `docker compose` command
 - Python 3.10 or newer
 - Git
-- Microsoft ODBC Driver 18 for SQL Server, required when Python database work
-  begins and when importing `database.py`
+- Microsoft ODBC Driver 18 for SQL Server (required by `pyodbc`)
 
-Windows users can download
-[Microsoft ODBC Driver 18](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+Windows users should install the x64 or Arm64 build of
+[Microsoft ODBC Driver 18](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)
+that matches their Python installation. SSMS is optional and is available only
+on Windows.
 
-On macOS, install the driver and its `unixODBC` dependency through Microsoft's
-Homebrew repository:
-
-```bash
-brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-brew trust microsoft/mssql-release
-brew update
-HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
-```
-
-The `brew trust` command is required by Homebrew 6 and is safe to omit on older
-Homebrew versions that do not provide it. See Microsoft's
-[macOS installation guide](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-sql-server-macos).
+The macOS commands for installing the driver and its `unixODBC` dependency are
+included in the macOS setup section below.
 
 Start Docker Desktop and wait until its engine is running before using any
-Docker command below.
+Docker command below. You do **not** need to install a second native SQL Server
+instance: the project database runs inside Docker.
 
 ## 2. First setup on Windows
 
-Open the project folder in VS Code and use a **PowerShell** terminal:
+Install Docker Desktop, Git, Python 3.10+, and ODBC Driver 18. Open the cloned
+project folder in VS Code and use a **PowerShell** terminal:
 
 ```powershell
 Copy-Item .env.example .env
 docker compose config --quiet
 docker compose up -d
+docker compose ps -a
 
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -c "import pyodbc; print(pyodbc.drivers())"
 python main.py
 ```
+
+Before starting `main.py`, confirm that `docker compose ps -a` shows:
+
+- `sqlserver` as `Up ... (healthy)`;
+- `backup-volume-init` as `Exited (0)`; and
+- `database-init` as `Exited (0)`.
 
 If PowerShell blocks virtual-environment activation, allow scripts for only the
 current terminal and activate again:
@@ -70,28 +86,60 @@ current terminal and activate again:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-The helper files in `docker/*.sh` require Bash. On Windows, run them from Git
-Bash or WSL while Docker Desktop is running.
+For later runs, start Docker Desktop and use:
+
+```powershell
+docker compose up -d
+.venv\Scripts\Activate.ps1
+python main.py
+```
+
+The helper files in `docker/*.sh` require Bash. On Windows, run those specific
+scripts from Git Bash or WSL while Docker Desktop is running. Normal setup and
+application startup work entirely from PowerShell.
 
 ## 3. First setup on macOS
 
-Open the project folder in VS Code and use a **zsh** terminal:
+Install Docker Desktop, Git, Python 3.10+, Homebrew, and ODBC Driver 18. Then
+open the cloned project folder in Terminal or VS Code and use **zsh**:
+
+```bash
+brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+brew trust microsoft/mssql-release
+brew update
+HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
+```
+
+On Homebrew versions older than 6, `brew trust` may not exist and can be
+skipped. Set up the project:
 
 ```bash
 cp .env.example .env
 docker compose config --quiet
 docker compose up -d
+docker compose ps -a
 
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python main.py
+python -c "import pyodbc; print(pyodbc.drivers())"
+python3 main.py
+```
+
+The driver check must include `ODBC Driver 18 for SQL Server`. For later runs:
+
+```bash
+docker compose up -d
+source .venv/bin/activate
+python3 main.py
 ```
 
 SQL Server's Linux container is x86-64. The shared `DOCKER_PLATFORM=linux/amd64`
 setting enables Docker emulation on Apple Silicon; initial startup can therefore
-take longer than on an x86-64 computer.
+take longer than on an x86-64 computer. SSMS does not run on macOS; use the
+application, `sqlcmd`, or another SQL client when manual database inspection is
+needed.
 
 ## 4. Verify the database
 
@@ -127,8 +175,8 @@ rolls back all test records. Success ends with
 Copy `.env.example` to `.env`; do not commit `.env`. The checked-in baseline is:
 
 ```text
-SQL Server image: SQL Server 2022 CU27 on Ubuntu 22.04
-Host/port:        localhost:1433
+SQL Server image: SQL Server 2022 CU28 on Ubuntu 22.04
+Host/port:        127.0.0.1:1433 (local machine only)
 Database:         LibraryManagement
 Application user: library_app
 Application pass: LibraryApp_2026!
@@ -141,7 +189,26 @@ Timezone:         Asia/Ho_Chi_Minh
 The image is pinned through `MSSQL_IMAGE`; this prevents team members from
 silently receiving different SQL Server builds. Coordinate changes to the
 image, credentials, sample-data setting, and timezone. `MSSQL_PORT` is the host
-port and may be changed locally if port 1433 is already occupied.
+port and may be changed locally if port 1433 is already occupied. Because
+Docker Compose reads `.env` but Python does not load it automatically, also set
+the same port in the terminal before launching the application:
+
+```powershell
+# Windows PowerShell example
+$env:MSSQL_PORT = "14333"
+python main.py
+```
+
+```bash
+# macOS example
+export MSSQL_PORT=14333
+python3 main.py
+```
+
+Alternatively set `DB_HOST` directly, for example
+`127.0.0.1,14333`. With the standard port, no extra environment variable is
+needed; the program defaults to `127.0.0.1,1433` and database
+`LibraryManagement`.
 
 These credentials are only for local classroom development. Never expose this
 SQL Server port to the internet or reuse the passwords elsewhere. Each team
@@ -168,6 +235,11 @@ docker compose logs database-init
 # Stop and remove containers while keeping database and backup volumes
 docker compose down
 ```
+
+Closing the Python window does not stop SQL Server. Use `docker compose down`
+when finished, or leave the container running for the next development session.
+Database contents survive `docker compose down` because they are stored in a
+named Docker volume.
 
 Do not use `docker compose down -v` for routine shutdown. The `-v` option
 permanently removes the local database and every backup stored in its Docker
@@ -234,17 +306,19 @@ publisher, shelf, fine, or notification table was added.
 ```text
 main.py                    Application entry point
 dashboard.py               Navigation and screen switching
-database.py                Future shared pyodbc connection placeholder
+database.py                Shared pyodbc authentication and connection layer
 requirements.txt           Exact Python dependency versions
 compose.yaml               Reproducible SQL Server services and volumes
 .env.example               Shared local-development configuration template
 
-login/                     Login UI and future actions
-book_management/           Book UI and future actions
-reader_management/         Reader UI and future actions
-borrowing_and_returns/     Loan/return UI and future actions
-reports/                   Report UI and future actions
-backup_and_restore/        Backup/restore UI and future actions
+login/                     Login UI and authentication actions
+account_management/        Employee SQL-account administration
+catalog_search/            Read-only reader catalogue search
+book_management/           Book-management UI and actions
+reader_management/         Reader-management UI and actions
+borrowing_and_returns/     Loan/return UI and actions
+reports/                   Reports, statistics, and printing
+backup_and_restore/        Backup/restore UI and actions
 sql/                       Schema, data, permissions, checks, and maintenance SQL
 docker/                    Initialization, smoke-test, and maintenance helpers
 Additional Info/           Teacher specification and lesson references
@@ -262,13 +336,18 @@ list. The classroom accounts all use password `123456`:
 | `nv_huong` | `1` (Nguyễn Hương) | `THUTHU` | Books, readers, loans, and reports |
 | `nv_long` | `2` (Trần Long) | `THUTHU` | Books, readers, loans, and reports |
 | `nv_nam` | `4` (Phạm Nam) | `THUTHU` | Books, readers, loans, and reports |
+| `docgia` | Shared reader identity | `DOCGIA` | Read-only book catalogue search |
 
-Readers in `DOCGIA` are library-card records, not SQL Server or application
-login accounts. New logins can be created only for valid `NHANVIEN` rows.
+Individual rows in the `DOCGIA` table are library-card records, not individual
+SQL accounts. The teacher-required `docgia` login is one shared, read-only
+identity for students to search the catalogue. New employee logins can still be
+created only for valid `NHANVIEN` rows.
 
-For the SSMS part of the presentation, connect to `localhost,1433` using SQL
-Server Authentication and one of those accounts. Enable **Trust server
-certificate** in the connection options. Open and execute
+For the SSMS part of the presentation on Windows, connect to
+`127.0.0.1,1433` using **SQL Server Authentication** and one of those accounts.
+Do not select an unrelated `localhost` Windows-authentication history entry.
+Set **Database name** to `LibraryManagement` and enable **Trust server
+certificate**. Open and execute
 `sql/06_teacher_login_demo.sql`; it displays the server logins, numbered
 database users, role memberships, and the identity of the currently connected
 account.
@@ -305,3 +384,96 @@ Normal initialization runs these scripts in order:
 `99_smoke_test.sql` is run only by `docker/smoke-test.sh`.
 `04_backup_and_restore.sql` is run only by
 `docker/database-maintenance.sh`.
+
+## 11. Run automated checks
+
+Run the Python unit tests from an activated virtual environment:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Run the database transaction and permission smoke test from Bash (Terminal on
+macOS, Git Bash or WSL on Windows):
+
+```bash
+./docker/smoke-test.sh
+```
+
+The database smoke test rolls back its temporary records. A successful run ends
+with `ALL_DATABASE_SMOKE_TESTS_PASSED`.
+
+## 12. Troubleshooting
+
+### SSMS cannot connect
+
+- Confirm Docker Desktop is running and `docker compose ps` reports
+  `sqlserver` as healthy.
+- Use server name `127.0.0.1,1433`, not plain `localhost`.
+- Select **SQL Server Authentication**, not Windows Authentication.
+- Enable **Trust server certificate**.
+- If SSMS shows a Named Pipes error for `localhost`, it is trying an unrelated
+  local Windows SQL Server entry rather than this Docker project.
+
+SSMS is Windows-only. It is optional for running the application and is mainly
+useful for inspecting the database and demonstrating permissions.
+
+### Port 1433 is already in use
+
+Check the owner of the port:
+
+```powershell
+# Windows
+Get-NetTCPConnection -LocalPort 1433 -ErrorAction SilentlyContinue
+```
+
+```bash
+# macOS
+lsof -nP -iTCP:1433 -sTCP:LISTEN
+```
+
+Either stop the conflicting local database or change `MSSQL_PORT` in `.env`.
+If the port is changed, export the same value (or `DB_HOST`) before starting
+Python as explained in **Shared configuration**.
+
+### Python reports that no ODBC driver is available
+
+Verify the driver from the activated environment:
+
+```bash
+python -c "import pyodbc; print(pyodbc.drivers())"
+```
+
+Install Microsoft ODBC Driver 18 if it is absent. On macOS, also ensure the
+terminal, Python, unixODBC, and ODBC driver use compatible CPU architectures.
+
+### The database is running but tables or logins are missing
+
+Inspect the initializer output:
+
+```bash
+docker compose logs database-init
+```
+
+If initialization failed, fix the reported error and run
+`docker compose up -d` again. Only use `docker compose down -v` when you
+intentionally want to delete the local database and rebuild it from the SQL
+scripts.
+
+### The GUI does not open on macOS
+
+Check that Python includes Tk support:
+
+```bash
+python3 -m tkinter
+```
+
+If this command fails, install a Python distribution with Tk support, recreate
+`.venv`, and reinstall `requirements.txt`.
+
+## Reference links
+
+- [Docker Desktop installation](https://docs.docker.com/desktop/)
+- [Microsoft ODBC Driver 18 downloads](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)
+- [Microsoft ODBC Driver 18 on macOS](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-for-sql-server-macos)
+- [SQL Server Management Studio](https://learn.microsoft.com/en-us/ssms/faq)

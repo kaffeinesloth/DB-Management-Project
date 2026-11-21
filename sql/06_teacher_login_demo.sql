@@ -4,7 +4,7 @@
     Connect in SSMS with:
       Server name: localhost,1433
       Authentication: SQL Server Authentication
-      Login: admin (or nv_huong / nv_long / nv_nam)
+      Login: admin (or nv_huong / nv_long / nv_nam / docgia)
       Password: 123456
       Options > Connection Properties > Trust server certificate: checked
 */
@@ -12,14 +12,14 @@
 USE [LibraryManagement];
 GO
 
--- 1) The four SQL Server logins used by the form.
+-- 1) Employee logins plus the shared read-only reader login.
 SELECT
     sp.name AS LoginName,
     sp.type_desc AS LoginType,
     sp.is_disabled AS IsDisabled,
     sp.default_database_name AS DefaultDatabase
 FROM sys.server_principals AS sp
-WHERE sp.name IN (N'admin', N'nv_huong', N'nv_long', N'nv_nam')
+WHERE sp.name IN (N'admin', N'nv_huong', N'nv_long', N'nv_nam', N'docgia')
 ORDER BY sp.name;
 
 -- 2) Login -> numbered database user -> application role.
@@ -32,7 +32,7 @@ JOIN sys.database_role_members AS drm
   ON drm.member_principal_id = dp.principal_id
 JOIN sys.database_principals AS role_dp
   ON role_dp.principal_id = drm.role_principal_id
-WHERE dp.name IN (N'1', N'2', N'3', N'4')
+WHERE dp.name IN (N'1', N'2', N'3', N'4', N'docgia')
 ORDER BY dp.name;
 
 -- 3) Run this while connected as one of the four users.
@@ -42,11 +42,15 @@ SELECT
 EXEC dbo.sp_LayThongTinHienTai;
 GO
 
--- 4) Account status used by the manager screen.
+-- 4) Run this as docgia: catalogue lookup succeeds; base-table writes do not.
+SELECT TOP (20) * FROM dbo.v_TraCuuSachDocGia ORDER BY TENSACH, MASACH;
+GO
+
+-- 5) Account status used by the manager screen.
 EXEC dbo.sp_DanhSachTaiKhoanNhanVien;
 GO
 
--- 5) Verify that account administration is encapsulated in signed procedures.
+-- 6) Verify that account administration is encapsulated in signed procedures.
 SELECT
     procedure_name = OBJECT_SCHEMA_NAME(cp.major_id) + N'.' + OBJECT_NAME(cp.major_id),
     certificate_name = cert.name

@@ -104,7 +104,36 @@ class DatabaseAuthenticationTests(unittest.TestCase):
 
         self.assertEqual(result["MANV"], 1)
         self.assertEqual(result["RoleName"], "THUTHU")
+        cursor.execute.assert_called_once_with("EXEC dbo.sp_LayThongTinHienTai")
         connection.close.assert_called_once()
+
+    @patch("database.get_connection")
+    def test_shared_reader_account_returns_docgia_identity(self, mock_get_connection):
+        connection = Mock()
+        cursor = connection.cursor.return_value
+        cursor.fetchone.return_value = (
+            "docgia", "shared_docgia", "DOCGIA", None,
+            "Độc giả tra cứu", "", "Độc giả",
+        )
+        mock_get_connection.return_value = connection
+
+        result = database.dang_nhap_he_thong("docgia", "123456")
+
+        self.assertIsNone(result["MANV"])
+        self.assertEqual(result["RoleName"], "DOCGIA")
+        self.assertEqual(result["VaiTro"], "Độc giả")
+
+    @patch("database.get_connection")
+    def test_docgia_role_rejects_another_login_name(self, mock_get_connection):
+        connection = Mock()
+        connection.cursor.return_value.fetchone.return_value = (
+            "impostor", "shared_docgia", "DOCGIA", None,
+            "Độc giả tra cứu", "", "Độc giả",
+        )
+        mock_get_connection.return_value = connection
+
+        with self.assertRaisesRegex(ValueError, "dùng chung không hợp lệ"):
+            database.dang_nhap_he_thong("impostor", "123456")
 
     @patch("database.get_connection")
     def test_unlinked_account_is_rejected(self, mock_get_connection):
