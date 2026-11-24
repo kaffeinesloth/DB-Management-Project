@@ -96,6 +96,9 @@ echo "Running 04_backup_and_restore.sql (SETUP: backup history view and permissi
 # Reports grant EXECUTE to the application role, so they run after 03.
 run_script /docker-init/sql/06_reports.sql
 
+# Server-side Reader/Book procedures grant EXECUTE to roles created in 03.
+run_script /docker-init/sql/08_server_side_crud.sql
+
 run_script /docker-init/sql/05_verify_database.sql
 
 echo "Database initialization completed successfully."

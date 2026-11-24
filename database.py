@@ -347,6 +347,49 @@ def kiem_tra_dang_nhap(username: str, password: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Gọi Stored Procedure: client chỉ gửi EXEC, toàn bộ xử lý nằm trên SQL Server
+# ---------------------------------------------------------------------------
+def fetch_dicts(cursor: Any) -> list:
+    """Read the current result set of ``cursor`` as a list of dicts."""
+    if cursor.description is None:
+        return []
+    columns = [column[0] for column in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def call_rows(sql: str, params: tuple = ()) -> list:
+    """Run a read-only ``EXEC`` and return every row as a dict."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        return fetch_dicts(cursor)
+
+
+def call_one(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    """Run a read-only ``EXEC`` and return the first row as a dict (or None)."""
+    rows = call_rows(sql, params)
+    return rows[0] if rows else None
+
+
+def call_write(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    """Run a writing ``EXEC`` and commit. Returns the first result row, if any.
+
+    The procedure owns its transaction; on any error the connection is rolled
+    back and the original pyodbc error is re-raised for the caller to map.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(sql, params)
+            rows = fetch_dicts(cursor)
+            conn.commit()
+            return rows[0] if rows else None
+        except Exception:
+            conn.rollback()
+            raise
+
+
+# ---------------------------------------------------------------------------
 # Phân tích mã lỗi gốc SQL Server (native error codes) sang thông báo tiếng Việt
 # ---------------------------------------------------------------------------
 FK_VIOLATION = 547          # INSERT/UPDATE/DELETE conflicted with a FOREIGN KEY / CHECK
@@ -386,8 +429,15 @@ def server_message(error: BaseException) -> str:
     return text.strip().strip("'\"").strip()
 
 
+def is_business_error(error: BaseException) -> bool:
+    """True for a THROW 50000-59999 raised by our stored procedures / triggers."""
+    return any(50000 <= code <= 59999 for code in sql_error_codes(error))
+
+
 def friendly_message(error: BaseException, entity: str = "dữ liệu") -> Optional[str]:
     """Return a Vietnamese explanation for well-known SQL Server errors, else None."""
+    if is_business_error(error):
+        return server_message(error)
     if is_fk_violation(error):
         return FK_DELETE_MESSAGE
     if has_error_code(error, PRIMARY_KEY, UNIQUE_INDEX):

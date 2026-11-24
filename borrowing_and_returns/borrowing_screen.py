@@ -288,8 +288,8 @@ class BorrowingScreen(ctk.CTkFrame):
     def load_available_readers_recommendation(self):
         """Tải danh sách thẻ độc giả đang hoạt động (HOATDONG = 1) làm gợi ý cho ComboBox."""
         try:
-            readers = [r for r in DocGiaDAO.get_all() if r.get("HOATDONG")]
-            readers.sort(key=lambda r: int(r["MADG"]))
+            # Filter (HOATDONG = 1) and ORDER BY MADG run on SQL Server.
+            readers = DocGiaDAO.get_active_readers()
             options = ["-- Chọn hoặc gõ mã ĐG --"]
             for r in readers:
                 ho_ten = f"{r.get('HODG', '')} {r.get('TENDG', '')}".strip()

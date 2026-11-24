@@ -73,6 +73,33 @@ class ReaderValidationTests(unittest.TestCase):
             ReaderActions.validate_reader_data(data)
 
 
+class FakeCursor:
+    """Records EXEC calls; returns a scripted result set per procedure name."""
+
+    def __init__(self, results=None, error=None):
+        self.calls = []
+        self.results = results or {}
+        self.error = error
+        self.description = None
+        self._rows = []
+
+    def execute(self, query, params=()):
+        self.calls.append((" ".join(query.split()), tuple(params)))
+        if self.error is not None:
+            raise self.error
+        for name, (columns, rows) in self.results.items():
+            if name in query:
+                self.description = [(column,) for column in columns]
+                self._rows = list(rows)
+                return self
+        self.description = None
+        self._rows = []
+        return self
+
+    def fetchall(self):
+        return self._rows
+
+
 class FakeConnection:
     def __init__(self, cursor):
         self._cursor = cursor
@@ -95,136 +122,98 @@ class FakeConnection:
         self.rolled_back = True
 
 
-class ReplacementCursor:
-    def __init__(self):
-        self.calls = []
-        self.rowcount = -1
-        self._result = None
-
-    def execute(self, query, params=()):
-        self.calls.append((query, params))
-        if "WITH (UPDLOCK, HOLDLOCK)" in query:
-            self._result = (
-                "Nguyễn Văn", "An", "an@example.com", "123456789012", 1,
-                datetime(2001, 5, 15), "Quận 1", "0912345678", 1,
-            )
-        elif query.lstrip().startswith("UPDATE"):
-            self.rowcount = 1
-        elif "OUTPUT INSERTED.MADG" in query:
-            self._result = (88,)
-        return self
-
-    def fetchone(self):
-        return self._result
+DETAIL_COLUMNS = ("MADG", "HODG", "TENDG", "EMAILDG", "SOCMND", "GIOITINH", "NGAYSINH",
+                  "DIACHI", "DIENTHOAI", "NGAYLAMTHE", "NGAYHETHAN", "HOATDONG")
 
 
-class EligibilityCursor:
-    def __init__(self):
-        self.calls = []
-        self._results = [
-            (1, 0, "31/12/2027", "123456789012"),
-            (2,),
-        ]
-
-    def execute(self, query, params=()):
-        self.calls.append((query, params))
-        return self
-
-    def fetchone(self):
-        return self._results.pop(0)
-
-
-class UpdateCursor:
-    def __init__(self, active=1):
-        self.calls = []
-        self.rowcount = -1
-        self._result = None
-        self.active = active
-
-    def execute(self, query, params=()):
-        self.calls.append((query, params))
-        compact_query = " ".join(query.split())
-        if "SELECT MADG" in query and "WITH (UPDLOCK, HOLDLOCK)" in query:
-            self._result = (
-                7, "Nguyễn Văn", "An", "an@example.com", "123456789012", 1,
-                datetime(2001, 5, 15), "Quận 1", "0912345678",
-                datetime(2026, 1, 1), datetime(2027, 1, 1), self.active,
-            )
-        elif compact_query.startswith("SELECT COUNT(*)"):
-            self._result = (0,)
-        elif "UPDATE dbo.DOCGIA SET SOCMND" in compact_query:
-            self.rowcount = 2
-        elif compact_query.startswith("UPDATE dbo.DOCGIA SET HODG"):
-            self.rowcount = 1
-        return self
-
-    def fetchone(self):
-        return self._result
+def detail_row(active=1):
+    return (7, "Nguyễn Văn", "An", "an@example.com", "123456789012", 1,
+            datetime(2001, 5, 15), "Quận 1", "0912345678",
+            datetime(2026, 1, 1), datetime(2027, 1, 1), active)
 
 
 class ReaderDatabaseWorkflowTests(unittest.TestCase):
-    def test_reader_update_preserves_card_fields_and_commits(self):
-        cursor = UpdateCursor()
+    """Python only sends EXEC; the rules live in sql/08_server_side_crud.sql."""
+
+    def run_with(self, cursor, func, *args, **kwargs):
         connection = FakeConnection(cursor)
-        changes = {
-            "HODG": "Nguyễn Văn",
-            "TENDG": "Bình",
-            "EMAILDG": "binh@example.com",
-            "SOCMND": "999999999999",
-            "GIOITINH": 1,
-            "NGAYSINH": datetime(2001, 5, 15),
-            "DIACHI": "Quận 3",
-            "DIENTHOAI": "0987654321",
-        }
-        with patch("reader_management.reader_actions.get_connection", return_value=connection):
-            updated = ReaderActions.update(7, changes)
+        with patch("database.get_connection", return_value=connection):
+            return func(*args, **kwargs), connection
+
+    def test_reader_update_calls_stored_procedure_with_merged_fields(self):
+        cursor = FakeCursor({"sp_DocGia_ChiTiet": (DETAIL_COLUMNS, [detail_row()])})
+        changes = {"TENDG": "Bình", "SOCMND": "999999999999", "DIACHI": "Quận 3"}
+        updated, connection = self.run_with(cursor, ReaderActions.update, 7, changes)
 
         self.assertTrue(updated)
         self.assertTrue(connection.committed)
-        self.assertFalse(connection.rolled_back)
-        identity_updates = [call for call in cursor.calls if "SET SOCMND = ?" in call[0]]
-        self.assertEqual(identity_updates[0][1], ("999999999999", "123456789012"))
-        final_update = cursor.calls[-1]
-        self.assertEqual(final_update[1][-1], 7)
-        self.assertNotIn("NGAYLAMTHE =", final_update[0])
-        self.assertNotIn("NGAYHETHAN =", final_update[0])
-        self.assertNotIn("SET HOATDONG =", final_update[0])
+        query, params = cursor.calls[-1]
+        self.assertTrue(query.startswith("EXEC dbo.sp_DocGia_CapNhat"))
+        self.assertEqual(params[0], 7)
+        self.assertEqual(params[2], "Bình")            # changed
+        self.assertEqual(params[1], "Nguyễn Văn")      # kept from the current card
+        self.assertEqual(params[4], "999999999999")
+        self.assertNotIn("NGAYLAMTHE", query)
+        self.assertNotIn("HOATDONG", query)
 
     def test_locked_reader_cannot_be_edited(self):
-        cursor = UpdateCursor(active=0)
-        connection = FakeConnection(cursor)
-        with patch("reader_management.reader_actions.get_connection", return_value=connection):
-            with self.assertRaisesRegex(ValueError, "dữ liệu lịch sử"):
-                ReaderActions.update(7, {"TENDG": "Bình"})
+        cursor = FakeCursor({"sp_DocGia_ChiTiet": (DETAIL_COLUMNS, [detail_row(active=0)])})
+        with self.assertRaisesRegex(ValueError, "dữ liệu lịch sử"):
+            self.run_with(cursor, ReaderActions.update, 7, {"TENDG": "Bình"})
+        self.assertFalse(any("sp_DocGia_CapNhat" in call[0] for call in cursor.calls))
 
-        self.assertTrue(connection.rolled_back)
-        self.assertFalse(connection.committed)
-
-    def test_lost_card_replacement_is_atomic_and_returns_new_id(self):
-        cursor = ReplacementCursor()
-        connection = FakeConnection(cursor)
-        with patch("reader_management.reader_actions.get_connection", return_value=connection):
-            new_id = ReaderActions.cap_lai_the_mat(7, so_thang=12)
+    def test_lost_card_replacement_is_one_procedure_call(self):
+        cursor = FakeCursor({"sp_DocGia_CapLaiThe": (("MADG",), [(88,)])})
+        new_id, connection = self.run_with(cursor, ReaderActions.cap_lai_the_mat, 7, so_thang=12)
 
         self.assertEqual(new_id, 88)
         self.assertTrue(connection.committed)
-        self.assertFalse(connection.rolled_back)
-        self.assertEqual(len(cursor.calls), 3)
-        self.assertIn("UPDLOCK, HOLDLOCK", cursor.calls[0][0])
-        self.assertIn("HOATDONG = 0", cursor.calls[1][0])
-        self.assertIn("INSERT INTO dbo.DOCGIA", cursor.calls[2][0])
+        self.assertEqual(cursor.calls, [("EXEC dbo.sp_DocGia_CapLaiThe @OldMADG=?, @SoThang=?", (7, 12))])
 
-    def test_borrow_limit_counts_all_cards_for_same_identity(self):
-        cursor = EligibilityCursor()
-        connection = FakeConnection(cursor)
-        with patch("reader_management.reader_actions.get_connection", return_value=connection):
-            valid, message, active_books = ReaderActions.kiem_tra_the_hop_le_muon_sach(88)
+    def test_borrow_eligibility_comes_from_server(self):
+        cursor = FakeCursor({"sp_DocGia_KiemTraMuonSach": (
+            ("HopLe", "LyDo", "DangGiu"), [(1, "Thẻ hợp lệ", 2)])})
+        (valid, message, active_books), _ = self.run_with(
+            cursor, ReaderActions.kiem_tra_the_hop_le_muon_sach, 88)
 
         self.assertTrue(valid)
         self.assertEqual(message, "Thẻ hợp lệ")
         self.assertEqual(active_books, 2)
-        self.assertEqual(cursor.calls[1][1], ("123456789012",))
-        self.assertIn("INNER JOIN dbo.DOCGIA", cursor.calls[1][0])
+        self.assertEqual(cursor.calls[0][1], (88,))
+
+    def test_active_readers_are_filtered_on_server(self):
+        cursor = FakeCursor({"sp_DocGia_DanhSachHoatDong": (
+            ("MADG", "HODG", "TENDG", "SOCMND"), [(3, "Lê", "Hoa", "123456789")])})
+        rows, _ = self.run_with(cursor, ReaderActions.get_active_readers)
+
+        self.assertEqual(rows, [{"MADG": 3, "HODG": "Lê", "TENDG": "Hoa", "SOCMND": "123456789"}])
+        self.assertEqual(cursor.calls[0][0], "EXEC dbo.sp_DocGia_DanhSachHoatDong")
+
+    def test_stored_procedure_throw_becomes_value_error_with_server_text(self):
+        import pyodbc
+        error = pyodbc.ProgrammingError(
+            "42000",
+            "[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+            "Không tìm thấy thẻ độc giả; vui lòng làm mới danh sách! (52106) (SQLExecDirectW)",
+        )
+        cursor = FakeCursor(error=error)
+        connection = FakeConnection(cursor)
+        with patch("database.get_connection", return_value=connection):
+            with self.assertRaisesRegex(ValueError, "^Không tìm thấy thẻ độc giả"):
+                ReaderActions.delete(999)
+        self.assertTrue(connection.rolled_back)
+
+    def test_fk_violation_still_maps_to_teacher_message(self):
+        import pyodbc
+        from database import FK_DELETE_MESSAGE
+        error = pyodbc.IntegrityError(
+            "23000", "[23000] [SQL Server]The DELETE statement conflicted with the "
+                     "REFERENCE constraint \"FK_PHIEUMUON_DOCGIA\". (547) (SQLExecDirectW)")
+        cursor = FakeCursor(error=error)
+        with patch("database.get_connection", return_value=FakeConnection(cursor)):
+            with self.assertRaises(ValueError) as caught:
+                ReaderActions.delete(1)
+        self.assertEqual(str(caught.exception), FK_DELETE_MESSAGE)
 
 
 class FormStateAndScreenWorkflowTests(unittest.TestCase):

@@ -1,4 +1,9 @@
-"""Validation and SQL Server operations for readers and library cards."""
+"""Validation and SQL Server operations for readers and library cards.
+
+Every database operation calls a stored procedure in sql/08_server_side_crud.sql
+(server-side processing). Python only validates input for friendly UI messages
+and sends EXEC; filtering, locking, uniqueness and state rules run on SQL Server.
+"""
 
 from calendar import monthrange
 from datetime import datetime
@@ -7,12 +12,13 @@ from typing import Any, Dict, List, Optional
 
 from database import (
     FK_DELETE_MESSAGE, PERMISSION_DENIED, PRIMARY_KEY, TRUNCATION, UNIQUE_INDEX,
-    get_connection, has_error_code, is_fk_violation,
+    call_one, call_rows, call_write, has_error_code, is_business_error,
+    is_fk_violation, server_message,
 )
 
 
 class ReaderActions:
-    """Business rules and parameterized queries for ``dbo.DOCGIA``."""
+    """Business rules and stored-procedure calls for ``dbo.DOCGIA``."""
 
     MAX_ACTIVE_BOOKS = 3
     EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -93,9 +99,12 @@ class ReaderActions:
         )
         return normalized
 
+
     @staticmethod
     def _raise_database_error(error: Exception) -> None:
         """Translate SQL Server failures by NATIVE ERROR CODE into UI messages."""
+        if is_business_error(error):                                 # THROW 5xxxx from the SP
+            raise ValueError(server_message(error)) from error
         if is_fk_violation(error):                                   # 547
             raise ValueError(FK_DELETE_MESSAGE) from error
         if "UX_DOCGIA_SOCMND_ACTIVE" in str(error) or has_error_code(error, UNIQUE_INDEX, PRIMARY_KEY):
@@ -107,102 +116,53 @@ class ReaderActions:
         raise RuntimeError(f"Lỗi SQL Server khi xử lý độc giả: {error}") from error
 
     @staticmethod
-    def delete(madg: int) -> bool:
-        """Delete a reader card. A card with loan history is protected by FK (error 547)."""
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("DELETE FROM dbo.DOCGIA WHERE MADG = ?;", (int(madg),))
-                deleted = cursor.rowcount == 1
-                if not deleted:
-                    raise ValueError(f"Không tìm thấy thẻ độc giả mã {madg}; vui lòng làm mới danh sách!")
-                conn.commit()
-                return True
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        return False
+    def _write(sql: str, params: tuple) -> Optional[Dict[str, Any]]:
+        """Run a writing procedure; map its errors to UI exceptions."""
+        try:
+            return call_write(sql, params)
+        except (ValueError, PermissionError):
+            raise
+        except Exception as error:
+            ReaderActions._raise_database_error(error)
+        return None
 
+    # ----------------------------------------------------------------- reads
     @staticmethod
     def get_all(limit: int = 500) -> List[Dict[str, Any]]:
         """Return the newest reader cards, including inactive card history."""
         safe_limit = max(1, min(int(limit), 1000))
-        query = f"""
-            SELECT TOP ({safe_limit})
-                MADG, HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                CONVERT(VARCHAR(10), NGAYSINH, 103) AS NgaySinh,
-                DIACHI, DIENTHOAI,
-                CONVERT(VARCHAR(10), NGAYLAMTHE, 103) AS NgayLamThe,
-                CONVERT(VARCHAR(10), NGAYHETHAN, 103) AS NgayHetHan,
-                HOATDONG
-            FROM dbo.DOCGIA
-            ORDER BY MADG DESC;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query)
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return call_rows("EXEC dbo.sp_DocGia_DanhSach @Keyword=?, @Top=?", (None, safe_limit))
+
+    @staticmethod
+    def search(keyword: str) -> List[Dict[str, Any]]:
+        """Search by name, identity number, phone, email, or card number (on SQL Server)."""
+        clean_keyword = (keyword or "").strip()
+        if not clean_keyword:
+            return ReaderActions.get_all()
+        return call_rows("EXEC dbo.sp_DocGia_DanhSach @Keyword=?", (clean_keyword,))
+
+    @staticmethod
+    def get_active_readers() -> List[Dict[str, Any]]:
+        """Active cards only, filtered and sorted by SQL Server (borrowing picker)."""
+        return call_rows("EXEC dbo.sp_DocGia_DanhSachHoatDong")
 
     @staticmethod
     def get_by_id(madg: int) -> Optional[Dict[str, Any]]:
         """Return one reader card with raw date values."""
-        query = """
-            SELECT MADG, HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                   NGAYSINH, DIACHI, DIENTHOAI, NGAYLAMTHE, NGAYHETHAN, HOATDONG
-            FROM dbo.DOCGIA
-            WHERE MADG = ?;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, (int(madg),))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            columns = [column[0] for column in cursor.description]
-            return dict(zip(columns, row))
+        return call_one("EXEC dbo.sp_DocGia_ChiTiet @MADG=?", (int(madg),))
 
     @staticmethod
-    def search(keyword: str) -> List[Dict[str, Any]]:
-        """Search by name, identity number, phone, email, or card number."""
-        clean_keyword = keyword.strip()
-        if not clean_keyword:
-            return ReaderActions.get_all()
-        pattern = f"%{clean_keyword}%"
-        query = """
-            SELECT MADG, HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                   CONVERT(VARCHAR(10), NGAYSINH, 103) AS NgaySinh,
-                   DIACHI, DIENTHOAI,
-                   CONVERT(VARCHAR(10), NGAYLAMTHE, 103) AS NgayLamThe,
-                   CONVERT(VARCHAR(10), NGAYHETHAN, 103) AS NgayHetHan,
-                   HOATDONG
-            FROM dbo.DOCGIA
-            WHERE TENDG LIKE ? OR HODG LIKE ? OR SOCMND LIKE ?
-               OR DIENTHOAI LIKE ? OR EMAILDG LIKE ?
-               OR CAST(MADG AS VARCHAR(20)) LIKE ?
-            ORDER BY MADG DESC;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, (pattern,) * 6)
-            columns = [column[0] for column in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    def _duplicates(socmnd: Optional[str], email: Optional[str],
+                    exclude_id: Optional[int]) -> Dict[str, Any]:
+        return call_one(
+            "EXEC dbo.sp_DocGia_KiemTraTrung @SOCMND=?, @EMAILDG=?, @ExcludeMADG=?",
+            (socmnd, email, None if exclude_id is None else int(exclude_id)),
+        ) or {}
 
     @staticmethod
     def check_cmnd_exists(socmnd: str, exclude_id: Optional[int] = None) -> bool:
         """Check whether an identity number already has an active card."""
-        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE SOCMND = ? AND HOATDONG = 1"
-        params: List[Any] = [socmnd.strip()]
-        if exclude_id is not None:
-            query += " AND MADG <> ?"
-            params.append(int(exclude_id))
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return cursor.fetchone()[0] > 0
+        return bool(ReaderActions._duplicates(socmnd.strip(), None, exclude_id).get("CmndTrung"))
 
     @staticmethod
     def check_email_exists(email: str, exclude_id: Optional[int] = None) -> bool:
@@ -210,135 +170,53 @@ class ReaderActions:
         clean_email = email.strip()
         if not clean_email:
             return False
-        query = "SELECT COUNT(*) FROM dbo.DOCGIA WHERE EMAILDG = ? AND HOATDONG = 1"
-        params: List[Any] = [clean_email]
-        if exclude_id is not None:
-            query += " AND MADG <> ?"
-            params.append(int(exclude_id))
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            return cursor.fetchone()[0] > 0
+        return bool(ReaderActions._duplicates(None, clean_email, exclude_id).get("EmailTrung"))
 
+    # ---------------------------------------------------------------- writes
     @staticmethod
     def insert(data: Dict[str, Any]) -> int:
         """Insert a reader card and return its generated ``MADG``."""
-        normalized = ReaderActions.validate_reader_data(data)
-        query = """
-            INSERT INTO dbo.DOCGIA (
-                HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                NGAYSINH, DIACHI, DIENTHOAI, NGAYLAMTHE, NGAYHETHAN, HOATDONG
-            )
-            OUTPUT INSERTED.MADG
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(query, (
-                    normalized["HODG"], normalized["TENDG"], normalized["EMAILDG"],
-                    normalized["SOCMND"], normalized["GIOITINH"], normalized.get("NGAYSINH"),
-                    normalized["DIACHI"], normalized["DIENTHOAI"], normalized["NGAYLAMTHE"],
-                    normalized["NGAYHETHAN"], normalized["HOATDONG"],
-                ))
-                new_id = int(cursor.fetchone()[0])
-                conn.commit()
-                return new_id
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        raise RuntimeError("Không thể cấp thẻ độc giả!")
+        n = ReaderActions.validate_reader_data(data)
+        row = ReaderActions._write(
+            "EXEC dbo.sp_DocGia_Them @HODG=?, @TENDG=?, @EMAILDG=?, @SOCMND=?, @GIOITINH=?, "
+            "@NGAYSINH=?, @DIACHI=?, @DIENTHOAI=?, @NGAYLAMTHE=?, @NGAYHETHAN=?, @HOATDONG=?",
+            (n["HODG"], n["TENDG"], n["EMAILDG"], n["SOCMND"], n["GIOITINH"], n.get("NGAYSINH"),
+             n["DIACHI"], n["DIENTHOAI"], n["NGAYLAMTHE"], n["NGAYHETHAN"], n["HOATDONG"]),
+        )
+        if not row or row.get("MADG") is None:
+            raise RuntimeError("Không thể cấp thẻ độc giả!")
+        return int(row["MADG"])
 
     @staticmethod
     def update(madg: int, data: Dict[str, Any]) -> bool:
-        """Update editable details while preserving the card's identity and history fields."""
-        select_current = """
-            SELECT MADG, HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                   NGAYSINH, DIACHI, DIENTHOAI, NGAYLAMTHE, NGAYHETHAN, HOATDONG
-            FROM dbo.DOCGIA WITH (UPDLOCK, HOLDLOCK)
-            WHERE MADG = ?;
-        """
-        check_identity = """
-            SELECT COUNT(*)
-            FROM dbo.DOCGIA WITH (UPDLOCK, HOLDLOCK)
-            WHERE SOCMND = ? AND SOCMND <> ?;
-        """
-        check_email = """
-            SELECT COUNT(*)
-            FROM dbo.DOCGIA WITH (UPDLOCK, HOLDLOCK)
-            WHERE EMAILDG = ? AND HOATDONG = 1 AND MADG <> ?;
-        """
-        update_identity_history = """
-            UPDATE dbo.DOCGIA SET SOCMND = ? WHERE SOCMND = ?;
-        """
-        update_reader = """
-            UPDATE dbo.DOCGIA
-            SET HODG = ?, TENDG = ?, EMAILDG = ?, SOCMND = ?, GIOITINH = ?,
-                NGAYSINH = ?, DIACHI = ?, DIENTHOAI = ?
-            WHERE MADG = ? AND HOATDONG = 1;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(select_current, (int(madg),))
-                row = cursor.fetchone()
-                if not row:
-                    raise ValueError(f"Không tìm thấy thẻ độc giả mã {madg}!")
-                if not row[11]:
-                    raise ValueError(
-                        "Không thể sửa thẻ đã khóa vì đây là dữ liệu lịch sử. "
-                        "Hãy chọn thẻ đang hoạt động của độc giả."
-                    )
+        """Update editable details; locking, uniqueness and history rules run in the SP."""
+        current = ReaderActions.get_by_id(madg)
+        if not current:
+            raise ValueError(f"Không tìm thấy thẻ độc giả mã {madg}!")
+        if not current["HOATDONG"]:
+            raise ValueError(
+                "Không thể sửa thẻ đã khóa vì đây là dữ liệu lịch sử. "
+                "Hãy chọn thẻ đang hoạt động của độc giả."
+            )
+        merged = dict(current)
+        for field in ("HODG", "TENDG", "EMAILDG", "SOCMND", "GIOITINH",
+                      "NGAYSINH", "DIACHI", "DIENTHOAI"):
+            if field in data:
+                merged[field] = data[field]
+        n = ReaderActions.validate_reader_data(merged)
+        ReaderActions._write(
+            "EXEC dbo.sp_DocGia_CapNhat @MADG=?, @HODG=?, @TENDG=?, @EMAILDG=?, @SOCMND=?, "
+            "@GIOITINH=?, @NGAYSINH=?, @DIACHI=?, @DIENTHOAI=?",
+            (int(madg), n["HODG"], n["TENDG"], n["EMAILDG"], n["SOCMND"], n["GIOITINH"],
+             n.get("NGAYSINH"), n["DIACHI"], n["DIENTHOAI"]),
+        )
+        return True
 
-                editable_fields = (
-                    "HODG", "TENDG", "EMAILDG", "SOCMND", "GIOITINH",
-                    "NGAYSINH", "DIACHI", "DIENTHOAI",
-                )
-                current = {
-                    "HODG": row[1], "TENDG": row[2], "EMAILDG": row[3],
-                    "SOCMND": row[4], "GIOITINH": row[5], "NGAYSINH": row[6],
-                    "DIACHI": row[7], "DIENTHOAI": row[8], "NGAYLAMTHE": row[9],
-                    "NGAYHETHAN": row[10], "HOATDONG": row[11],
-                }
-                for field in editable_fields:
-                    if field in data:
-                        current[field] = data[field]
-                normalized = ReaderActions.validate_reader_data(current)
-
-                old_identity = str(row[4])
-                new_identity = normalized["SOCMND"]
-                if new_identity != old_identity:
-                    cursor.execute(check_identity, (new_identity, old_identity))
-                    if cursor.fetchone()[0] > 0:
-                        raise ValueError("CMND/CCCD mới đã thuộc về một độc giả khác!")
-
-                if normalized["EMAILDG"]:
-                    cursor.execute(check_email, (normalized["EMAILDG"], int(madg)))
-                    if cursor.fetchone()[0] > 0:
-                        raise ValueError("Email này đã được đăng ký cho một thẻ đang hoạt động khác!")
-
-                # SOCMND links replacement-card history for person-level loan limits.
-                # A correction must therefore be applied to every historical card.
-                if new_identity != old_identity:
-                    cursor.execute(update_identity_history, (new_identity, old_identity))
-
-                cursor.execute(update_reader, (
-                    normalized["HODG"], normalized["TENDG"], normalized["EMAILDG"],
-                    normalized["SOCMND"], normalized["GIOITINH"], normalized.get("NGAYSINH"),
-                    normalized["DIACHI"], normalized["DIENTHOAI"], int(madg),
-                ))
-                changed = cursor.rowcount == 1
-                if not changed:
-                    raise ValueError("Thẻ không còn hoạt động; vui lòng làm mới danh sách!")
-                conn.commit()
-                return True
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        return False
+    @staticmethod
+    def delete(madg: int) -> bool:
+        """Delete a reader card. A card with loan history is protected by FK (error 547)."""
+        ReaderActions._write("EXEC dbo.sp_DocGia_Xoa @MADG=?", (int(madg),))
+        return True
 
     @staticmethod
     def gia_han_the(madg: int, so_thang: int = 12) -> bool:
@@ -346,144 +224,38 @@ class ReaderActions:
         months = int(so_thang)
         if months <= 0 or months > 60:
             raise ValueError("Số tháng gia hạn phải từ 1 đến 60!")
-        query = """
-            UPDATE dbo.DOCGIA
-            SET NGAYHETHAN = DATEADD(MONTH, ?,
-                CASE WHEN NGAYHETHAN < GETDATE() THEN GETDATE() ELSE NGAYHETHAN END)
-            WHERE MADG = ?;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(query, (months, int(madg)))
-                changed = cursor.rowcount > 0
-                conn.commit()
-                return changed
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        return False
+        ReaderActions._write("EXEC dbo.sp_DocGia_GiaHan @MADG=?, @SoThang=?", (int(madg), months))
+        return True
 
     @staticmethod
     def toggle_trang_thai(madg: int, hoat_dong: bool) -> bool:
         """Activate or lock a card; SQL Server prevents two active cards per identity."""
-        query = "UPDATE dbo.DOCGIA SET HOATDONG = ? WHERE MADG = ?;"
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(query, (1 if hoat_dong else 0, int(madg)))
-                changed = cursor.rowcount > 0
-                conn.commit()
-                return changed
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        return False
+        ReaderActions._write(
+            "EXEC dbo.sp_DocGia_DoiTrangThai @MADG=?, @HoatDong=?",
+            (int(madg), 1 if hoat_dong else 0),
+        )
+        return True
 
     @staticmethod
-    def cap_lai_the_mat(old_madg: int, new_data: Optional[Dict[str, Any]] = None, so_thang: int = 12) -> int:
+    def cap_lai_the_mat(old_madg: int, so_thang: int = 12) -> int:
         """Atomically lock a lost card and issue a new ``MADG`` for the same person."""
         months = int(so_thang)
         if months <= 0 or months > 60:
             raise ValueError("Thời hạn thẻ cấp lại phải từ 1 đến 60 tháng!")
-        select_old = """
-            SELECT HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                   NGAYSINH, DIACHI, DIENTHOAI, HOATDONG
-            FROM dbo.DOCGIA WITH (UPDLOCK, HOLDLOCK)
-            WHERE MADG = ?;
-        """
-        deactivate_old = "UPDATE dbo.DOCGIA SET HOATDONG = 0 WHERE MADG = ? AND HOATDONG = 1;"
-        insert_new = """
-            INSERT INTO dbo.DOCGIA (
-                HODG, TENDG, EMAILDG, SOCMND, GIOITINH,
-                NGAYSINH, DIACHI, DIENTHOAI, NGAYLAMTHE, NGAYHETHAN, HOATDONG
-            )
-            OUTPUT INSERTED.MADG
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1);
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(select_old, (int(old_madg),))
-                row = cursor.fetchone()
-                if not row:
-                    raise ValueError(f"Không tìm thấy thẻ độc giả mã {old_madg}!")
-                if not row[8]:
-                    raise ValueError("Thẻ được chọn đã bị khóa nên không thể cấp lại lần nữa!")
-
-                issue_date = datetime.now()
-                replacement = {
-                    "HODG": row[0], "TENDG": row[1], "EMAILDG": row[2], "SOCMND": row[3],
-                    "GIOITINH": row[4], "NGAYSINH": row[5], "DIACHI": row[6], "DIENTHOAI": row[7],
-                    "NGAYLAMTHE": issue_date,
-                    "NGAYHETHAN": ReaderActions.add_months(issue_date, months),
-                    "HOATDONG": 1,
-                }
-                if new_data:
-                    for field in ("HODG", "TENDG", "EMAILDG", "SOCMND", "GIOITINH", "NGAYSINH", "DIACHI", "DIENTHOAI"):
-                        if field in new_data:
-                            replacement[field] = new_data[field]
-                replacement = ReaderActions.validate_reader_data(replacement)
-
-                cursor.execute(deactivate_old, (int(old_madg),))
-                if cursor.rowcount != 1:
-                    raise ValueError("Thẻ cũ không còn hoạt động; vui lòng làm mới danh sách!")
-                cursor.execute(insert_new, (
-                    replacement["HODG"], replacement["TENDG"], replacement["EMAILDG"],
-                    replacement["SOCMND"], replacement["GIOITINH"], replacement.get("NGAYSINH"),
-                    replacement["DIACHI"], replacement["DIENTHOAI"], replacement["NGAYLAMTHE"],
-                    replacement["NGAYHETHAN"],
-                ))
-                new_id = int(cursor.fetchone()[0])
-                conn.commit()
-                return new_id
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as error:
-                conn.rollback()
-                ReaderActions._raise_database_error(error)
-        raise RuntimeError("Không thể cấp lại thẻ độc giả!")
+        row = ReaderActions._write(
+            "EXEC dbo.sp_DocGia_CapLaiThe @OldMADG=?, @SoThang=?", (int(old_madg), months)
+        )
+        if not row or row.get("MADG") is None:
+            raise RuntimeError("Không thể cấp lại thẻ độc giả!")
+        return int(row["MADG"])
 
     @staticmethod
     def kiem_tra_the_hop_le_muon_sach(madg: int) -> tuple[bool, str, int]:
         """Validate a card and count active loans across all cards of the same person."""
-        query_card = """
-            SELECT HOATDONG,
-                   CASE WHEN NGAYHETHAN < GETDATE() THEN 1 ELSE 0 END AS DaHetHan,
-                   CONVERT(VARCHAR(10), NGAYHETHAN, 103) AS NgayHetHanStr,
-                   SOCMND
-            FROM dbo.DOCGIA
-            WHERE MADG = ?;
-        """
-        query_borrowed_count = """
-            SELECT COUNT(*)
-            FROM dbo.CT_PHIEUMUON AS ct
-            INNER JOIN dbo.PHIEUMUON AS pm ON ct.MAPHIEU = pm.MAPHIEU
-            INNER JOIN dbo.DOCGIA AS dg ON pm.MADG = dg.MADG
-            WHERE dg.SOCMND = ? AND ct.TRA = 0;
-        """
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(query_card, (int(madg),))
-            row = cursor.fetchone()
-            if not row:
-                return False, f"Không tìm thấy thẻ độc giả mã {madg}!", 0
-
-            active, expired, expiry_text, identity_number = row
-            if not active:
-                return False, "Thẻ độc giả đang bị KHÓA! Không thể mượn sách.", 0
-            if expired:
-                return False, f"Thẻ độc giả đã HẾT HẠN từ ngày {expiry_text}! Vui lòng gia hạn thẻ.", 0
-
-            cursor.execute(query_borrowed_count, (identity_number,))
-            active_books = int(cursor.fetchone()[0])
-            if active_books >= ReaderActions.MAX_ACTIVE_BOOKS:
-                return False, (
-                    f"Độc giả đang giữ {active_books} cuốn chưa trả trên các thẻ đã cấp; "
-                    "đã đạt tối đa 3 cuốn!"
-                ), active_books
-            return True, "Thẻ hợp lệ", active_books
+        row = call_one("EXEC dbo.sp_DocGia_KiemTraMuonSach @MADG=?", (int(madg),))
+        if not row:
+            return False, f"Không tìm thấy thẻ độc giả mã {madg}!", 0
+        return bool(row["HopLe"]), str(row["LyDo"]), int(row["DangGiu"] or 0)
 
 
 DocGiaDAO = ReaderActions

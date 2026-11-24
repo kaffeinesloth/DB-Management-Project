@@ -230,6 +230,26 @@ BEGIN
     ;THROW 50108, 'A reports-and-statistics object is missing. Run 06_reports.sql.', 1;
 END;
 
+IF EXISTS
+(
+    SELECT 1
+    FROM (VALUES
+        (N'sp_DocGia_DanhSach'), (N'sp_DocGia_DanhSachHoatDong'), (N'sp_DocGia_ChiTiet'),
+        (N'sp_DocGia_KiemTraTrung'), (N'sp_DocGia_Them'), (N'sp_DocGia_CapNhat'),
+        (N'sp_DocGia_Xoa'), (N'sp_DocGia_GiaHan'), (N'sp_DocGia_DoiTrangThai'),
+        (N'sp_DocGia_CapLaiThe'), (N'sp_DocGia_KiemTraMuonSach'),
+        (N'sp_DanhMuc_TheLoai'), (N'sp_DanhMuc_NganTu'), (N'sp_DanhMuc_TacGia'), (N'sp_DanhMuc_NgonNgu'),
+        (N'sp_Sach_DanhSach'), (N'sp_Sach_SanSangChoMuon'), (N'sp_Sach_KiemTraChoMuon'),
+        (N'sp_Sach_Them'), (N'sp_Sach_CapNhat'), (N'sp_Sach_CapNhatTinhTrang'), (N'sp_Sach_Huy'),
+        (N'sp_DauSach_DanhSach'), (N'sp_DauSach_ChiTiet'), (N'sp_DauSach_Them'),
+        (N'sp_DauSach_CapNhat'), (N'sp_DauSach_Xoa')
+    ) AS required_proc (ProcName)
+    WHERE OBJECT_ID(N'dbo.' + required_proc.ProcName, N'P') IS NULL
+)
+BEGIN
+    ;THROW 50120, 'A server-side Reader/Book procedure is missing. Run 08_server_side_crud.sql.', 1;
+END;
+
 IF DATABASE_PRINCIPAL_ID(N'library_app_role') IS NULL
 BEGIN
     ;THROW 50107, 'The shared application database role is missing.', 1;

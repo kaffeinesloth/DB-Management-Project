@@ -247,5 +247,87 @@ BEGIN CATCH
 END CATCH;
 
 SELECT N'PASS' AS Result, N'Reports and statistics' AS TestName;
+GO
+
+/* Server-side Reader/Book procedures (08_server_side_crud.sql). Rolled back. */
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @Ids TABLE (MADG BIGINT);
+DECLARE @NewMADG BIGINT, @MATL CHAR(5), @MANGONNGU INT, @MANGANTU INT;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    INSERT INTO @Ids EXEC dbo.sp_DocGia_Them
+        @HODG = N'Smoke', @TENDG = N'Test', @EMAILDG = N'smoke.crud@example.com',
+        @SOCMND = '999000111222', @GIOITINH = 1, @NGAYSINH = '2000-01-01';
+    SELECT @NewMADG = MADG FROM @Ids;
+    IF @NewMADG IS NULL
+        THROW 50220, 'sp_DocGia_Them did not return the new MADG.', 1;
+
+    EXEC dbo.sp_DocGia_CapNhat @MADG = @NewMADG, @HODG = N'Smoke', @TENDG = N'Updated',
+        @EMAILDG = N'smoke.crud@example.com', @SOCMND = '999000111222', @GIOITINH = 0;
+    IF NOT EXISTS (SELECT 1 FROM dbo.DOCGIA WHERE MADG = @NewMADG AND TENDG = N'Updated' AND GIOITINH = 0)
+        THROW 50221, 'sp_DocGia_CapNhat did not update the reader.', 1;
+
+    EXEC dbo.sp_DocGia_GiaHan @MADG = @NewMADG, @SoThang = 6;
+    EXEC dbo.sp_DocGia_DoiTrangThai @MADG = @NewMADG, @HoatDong = 0;
+    IF EXISTS (SELECT 1 FROM dbo.DOCGIA WHERE MADG = @NewMADG AND HOATDONG = 1)
+        THROW 50222, 'sp_DocGia_DoiTrangThai did not lock the card.', 1;
+
+    DECLARE @Active TABLE (MADG BIGINT, HODG NVARCHAR(50), TENDG NVARCHAR(12), SOCMND VARCHAR(12));
+    INSERT INTO @Active EXEC dbo.sp_DocGia_DanhSachHoatDong;
+    IF EXISTS (SELECT 1 FROM @Active WHERE MADG = @NewMADG)
+       OR EXISTS (SELECT 1 FROM @Active AS a JOIN dbo.DOCGIA AS d ON d.MADG = a.MADG WHERE d.HOATDONG = 0)
+        THROW 50223, 'sp_DocGia_DanhSachHoatDong returned a locked card.', 1;
+
+    EXEC dbo.sp_DocGia_Xoa @MADG = @NewMADG;
+    IF EXISTS (SELECT 1 FROM dbo.DOCGIA WHERE MADG = @NewMADG)
+        THROW 50224, 'sp_DocGia_Xoa did not delete the reader.', 1;
+
+    SELECT TOP (1) @MATL = MATL FROM dbo.THELOAI;
+    SELECT TOP (1) @MANGONNGU = MANGONNGU FROM dbo.NGONNGU;
+    SELECT TOP (1) @MANGANTU = MANGANTU FROM dbo.NGANTU;
+
+    EXEC dbo.sp_DauSach_Them @ISBN = 'SMK0000001', @TENSACH = N'Smoke title',
+        @GIA = 1000, @MANGONNGU = @MANGONNGU, @MATL = @MATL;
+    EXEC dbo.sp_DauSach_CapNhat @ISBN = 'SMK0000001', @TENSACH = N'Smoke title 2', @GIA = 2000;
+    EXEC dbo.sp_Sach_Them @MASACH = 'SMK001', @ISBN = 'SMK0000001', @MANGANTU = @MANGANTU;
+    EXEC dbo.sp_Sach_CapNhatTinhTrang @MASACH = 'SMK001', @TINHTRANG = 0;
+    IF NOT EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH = 'SMK001' AND TINHTRANG = 0)
+       OR NOT EXISTS (SELECT 1 FROM dbo.ISBN WHERE ISBN = 'SMK0000001' AND TENSACH = N'Smoke title 2')
+        THROW 50225, 'Book add/update procedures did not write as expected.', 1;
+
+    EXEC dbo.sp_Sach_Huy @MASACH = 'SMK001';
+    EXEC dbo.sp_DauSach_Xoa @ISBN = 'SMK0000001';
+    IF EXISTS (SELECT 1 FROM dbo.ISBN WHERE ISBN = 'SMK0000001')
+        THROW 50226, 'sp_DauSach_Xoa did not delete the title.', 1;
+
+    ROLLBACK TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+
+/* Business-rule THROWs reach the caller with their 5xxxx number. */
+BEGIN TRY
+    EXEC dbo.sp_DocGia_Xoa @MADG = -1;
+    ;THROW 50227, 'sp_DocGia_Xoa accepted a missing reader.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 52106 THROW;
+END CATCH;
+
+BEGIN TRY
+    EXEC dbo.sp_Sach_Huy @MASACH = 'NO_SUCH';
+    ;THROW 50228, 'sp_Sach_Huy accepted a missing copy.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 53105 THROW;
+END CATCH;
+
+SELECT N'PASS' AS Result, N'Server-side Reader/Book procedures' AS TestName;
 SELECT N'ALL_DATABASE_SMOKE_TESTS_PASSED' AS Result;
 GO
