@@ -252,6 +252,7 @@ class ReaderScreen(ctk.CTkFrame):
         self.lbl_count.configure(text=f"Tổng: {len(self.records)} độc giả")
         self.state.clear()
         self.state.to_view()
+        self._apply_delete_availability()
 
     def handle_search(self):
         keyword = self.txt_search.get().strip()
@@ -283,6 +284,32 @@ class ReaderScreen(ctk.CTkFrame):
         record = self._selected()
         if record:
             self.state.fill(self._record_to_form(record))
+        self._apply_delete_availability(record)
+
+    def _apply_delete_availability(self, record: Optional[Dict[str, Any]] = None) -> None:
+        """Disable Delete until SQL Server says the selected reader has no loan history."""
+        button = self.buttons.get("delete")
+        if button is None:
+            return
+
+        can_delete = bool(record and record.get("CoTheXoa"))
+        button.configure(state="normal" if can_delete else "disabled")
+        if not record:
+            self.lbl_mode.configure(
+                text="Chế độ xem — chọn một dòng để xem chi tiết.",
+                text_color="#9CA3AF",
+            )
+            return
+        if can_delete:
+            self.lbl_mode.configure(
+                text="Chế độ xem — độc giả chưa có lịch sử mượn, có thể xóa.",
+                text_color="#9CA3AF",
+            )
+        else:
+            self.lbl_mode.configure(
+                text=f"🔒 {record.get('LyDoKhongDuocXoa') or 'Độc giả đã phát sinh dữ liệu liên quan.'}",
+                text_color="#F87171",
+            )
 
     def _read_form(self) -> Dict[str, Any]:
         """Collect form values (already strip()-ed by the controller) for the DAO."""
@@ -358,6 +385,13 @@ class ReaderScreen(ctk.CTkFrame):
         record = self._selected()
         if not record:
             messagebox.showwarning("Chưa chọn", "Vui lòng chọn độc giả cần xóa!")
+            return
+        if not bool(record.get("CoTheXoa")):
+            messagebox.showwarning(
+                "Không thể xóa",
+                record.get("LyDoKhongDuocXoa")
+                or "Độc giả đã phát sinh dữ liệu liên quan trong hệ thống.",
+            )
             return
         name = f"{record.get('HODG', '')} {record.get('TENDG', '')}".strip()
         if not messagebox.askyesno(

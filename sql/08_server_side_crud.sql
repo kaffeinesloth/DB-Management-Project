@@ -51,8 +51,15 @@ BEGIN
         DIACHI, DIENTHOAI,
         CONVERT(VARCHAR(10), NGAYLAMTHE, 103) AS NgayLamThe,
         CONVERT(VARCHAR(10), NGAYHETHAN, 103) AS NgayHetHan,
-        HOATDONG
-    FROM dbo.DOCGIA
+        HOATDONG,
+        CAST(CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.PHIEUMUON pm WHERE pm.MADG = dg.MADG
+        ) THEN 0 ELSE 1 END AS BIT) AS CoTheXoa,
+        CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.PHIEUMUON pm WHERE pm.MADG = dg.MADG
+        ) THEN N'Độc giả đã có lịch sử mượn sách nên không thể xóa.'
+          ELSE N'' END AS LyDoKhongDuocXoa
+    FROM dbo.DOCGIA dg
     WHERE @Keyword IS NULL
        OR TENDG LIKE @Pattern
        OR HODG LIKE @Pattern
@@ -459,7 +466,14 @@ BEGIN
         s.CHOMUON,
         s.MANGANTU,
         ISNULL(nt.KE + ' - ' + nt.MOTA, N'Chưa xếp') AS ViTri,
-        ISNULL(i.GIA, 0) AS GiaBia
+        ISNULL(i.GIA, 0) AS GiaBia,
+        CAST(CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.CT_PHIEUMUON ct WHERE ct.MASACH = s.MASACH
+        ) THEN 0 ELSE 1 END AS BIT) AS CoTheXoa,
+        CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.CT_PHIEUMUON ct WHERE ct.MASACH = s.MASACH
+        ) THEN N'Cuốn sách đã có lịch sử mượn/trả nên không thể xóa.'
+          ELSE N'' END AS LyDoKhongDuocXoa
     FROM dbo.SACH s
     INNER JOIN dbo.ISBN i ON s.ISBN = i.ISBN
     LEFT JOIN dbo.THELOAI tl ON i.MATL = tl.MATL
@@ -641,7 +655,11 @@ BEGIN
         ISNULL(i.NHAXB, N'') AS NHAXB,
         i.LANXUATBAN,
         ISNULL(st.TongBanSao, 0) AS TongBanSao,
-        ISNULL(st.BanSaoKhaDung, 0) AS BanSaoKhaDung
+        ISNULL(st.BanSaoKhaDung, 0) AS BanSaoKhaDung,
+        CAST(CASE WHEN ISNULL(st.TongBanSao, 0) = 0 THEN 1 ELSE 0 END AS BIT) AS CoTheXoa,
+        CASE WHEN ISNULL(st.TongBanSao, 0) > 0
+             THEN N'Đầu sách vẫn còn cuốn sách vật lý. Hãy xử lý các cuốn sách trước.'
+             ELSE N'' END AS LyDoKhongDuocXoa
     FROM dbo.ISBN i
     LEFT JOIN dbo.THELOAI tl ON i.MATL = tl.MATL
     LEFT JOIN dbo.NGONNGU nn ON i.MANGONNGU = nn.MANGONNGU

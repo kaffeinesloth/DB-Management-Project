@@ -276,6 +276,20 @@ BEGIN TRY
     IF EXISTS (SELECT 1 FROM dbo.DOCGIA WHERE MADG = @NewMADG AND HOATDONG = 1)
         THROW 50222, 'sp_DocGia_DoiTrangThai did not lock the card.', 1;
 
+    DECLARE @ReaderDeleteState TABLE (
+        MADG BIGINT, HODG NVARCHAR(50), TENDG NVARCHAR(12), EMAILDG NVARCHAR(50),
+        SOCMND VARCHAR(12), GIOITINH BIT, NgaySinh VARCHAR(10), DIACHI NVARCHAR(100),
+        DIENTHOAI VARCHAR(11), NgayLamThe VARCHAR(10), NgayHetHan VARCHAR(10), HOATDONG BIT,
+        CoTheXoa BIT, LyDoKhongDuocXoa NVARCHAR(200)
+    );
+    INSERT INTO @ReaderDeleteState
+        EXEC dbo.sp_DocGia_DanhSach @Keyword = N'999000111222';
+    IF NOT EXISTS (
+        SELECT 1 FROM @ReaderDeleteState
+        WHERE MADG = @NewMADG AND CoTheXoa = 1 AND LyDoKhongDuocXoa = N''
+    )
+        THROW 50229, 'Reader delete eligibility was not returned correctly.', 1;
+
     DECLARE @Active TABLE (MADG BIGINT, HODG NVARCHAR(50), TENDG NVARCHAR(12), SOCMND VARCHAR(12));
     INSERT INTO @Active EXEC dbo.sp_DocGia_DanhSachHoatDong;
     IF EXISTS (SELECT 1 FROM @Active WHERE MADG = @NewMADG)
@@ -292,12 +306,49 @@ BEGIN TRY
 
     EXEC dbo.sp_DauSach_Them @ISBN = 'SMK0000001', @TENSACH = N'Smoke title',
         @GIA = 1000, @MANGONNGU = @MANGONNGU, @MATL = @MATL;
+
+    DECLARE @TitleDeleteState TABLE (
+        ISBN VARCHAR(20), TENSACH NVARCHAR(100), THELOAI NVARCHAR(50), HOTENTG NVARCHAR(MAX),
+        NGONNGU NVARCHAR(50), SOTRANG INT, GIA BIGINT, GiaBia BIGINT, NHAXB NVARCHAR(100),
+        LANXUATBAN INT, TongBanSao INT, BanSaoKhaDung INT,
+        CoTheXoa BIT, LyDoKhongDuocXoa NVARCHAR(200)
+    );
+    INSERT INTO @TitleDeleteState
+        EXEC dbo.sp_DauSach_DanhSach @Keyword = N'SMK0000001';
+    IF NOT EXISTS (
+        SELECT 1 FROM @TitleDeleteState WHERE ISBN = 'SMK0000001' AND CoTheXoa = 1
+    )
+        THROW 50230, 'A title without copies was not marked deletable.', 1;
+
     EXEC dbo.sp_DauSach_CapNhat @ISBN = 'SMK0000001', @TENSACH = N'Smoke title 2', @GIA = 2000;
     EXEC dbo.sp_Sach_Them @MASACH = 'SMK001', @ISBN = 'SMK0000001', @MANGANTU = @MANGANTU;
     EXEC dbo.sp_Sach_CapNhatTinhTrang @MASACH = 'SMK001', @TINHTRANG = 0;
     IF NOT EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH = 'SMK001' AND TINHTRANG = 0)
        OR NOT EXISTS (SELECT 1 FROM dbo.ISBN WHERE ISBN = 'SMK0000001' AND TENSACH = N'Smoke title 2')
         THROW 50225, 'Book add/update procedures did not write as expected.', 1;
+
+    DELETE FROM @TitleDeleteState;
+    INSERT INTO @TitleDeleteState
+        EXEC dbo.sp_DauSach_DanhSach @Keyword = N'SMK0000001';
+    IF NOT EXISTS (
+        SELECT 1 FROM @TitleDeleteState
+        WHERE ISBN = 'SMK0000001' AND CoTheXoa = 0 AND LyDoKhongDuocXoa <> N''
+    )
+        THROW 50231, 'A title with a physical copy was not protected from deletion.', 1;
+
+    DECLARE @CopyDeleteState TABLE (
+        MASACH VARCHAR(20), ISBN VARCHAR(20), TENSACH NVARCHAR(100),
+        THELOAI NVARCHAR(50), TheLoaiAlias NVARCHAR(50), HOTENTG NVARCHAR(MAX),
+        HoTenTGAlias NVARCHAR(MAX), TINHTRANG BIT, CHOMUON BIT, MANGANTU INT,
+        ViTri NVARCHAR(200), GiaBia BIGINT, CoTheXoa BIT, LyDoKhongDuocXoa NVARCHAR(200)
+    );
+    INSERT INTO @CopyDeleteState
+        EXEC dbo.sp_Sach_DanhSach @Keyword = N'SMK001';
+    IF NOT EXISTS (
+        SELECT 1 FROM @CopyDeleteState
+        WHERE MASACH = 'SMK001' AND CoTheXoa = 1 AND LyDoKhongDuocXoa = N''
+    )
+        THROW 50232, 'A copy without loan history was not marked deletable.', 1;
 
     EXEC dbo.sp_Sach_Huy @MASACH = 'SMK001';
     EXEC dbo.sp_DauSach_Xoa @ISBN = 'SMK0000001';
