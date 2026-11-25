@@ -462,6 +462,7 @@ class BorrowingScreen(ctk.CTkFrame):
             )
         except ValueError as ve:
             messagebox.showwarning("Cảnh báo", str(ve))
+            return
         except Exception as ex:
             messagebox.showerror("Lỗi tính phí", str(ex))
             return

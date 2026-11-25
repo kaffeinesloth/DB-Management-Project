@@ -250,6 +250,33 @@ BEGIN
     ;THROW 50120, 'A server-side Reader/Book procedure is missing. Run 08_server_side_crud.sql.', 1;
 END;
 
+IF OBJECT_ID(N'dbo.sp_PhieuMuon_Tao', N'P') IS NULL
+   OR OBJECT_ID(N'dbo.sp_PhieuMuon_XacNhanTra', N'P') IS NULL
+   OR OBJECT_ID(N'dbo.sp_PhieuMuon_TraTheoISBN', N'P') IS NULL
+BEGIN
+    ;THROW 50121, 'A borrow/return transaction procedure is missing. Run 09_borrowing_transactions.sql.', 1;
+END;
+
+IF EXISTS
+(
+    SELECT 1
+    FROM (VALUES (N'QUANLY'), (N'THUTHU')) AS staff_role (RoleName)
+    CROSS JOIN (VALUES (N'sp_PhieuMuon_Tao'), (N'sp_PhieuMuon_XacNhanTra'),
+                       (N'sp_PhieuMuon_TraTheoISBN')) AS borrow_proc (ProcName)
+    WHERE NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.database_permissions AS perm
+        WHERE perm.major_id = OBJECT_ID(N'dbo.' + borrow_proc.ProcName)
+          AND perm.grantee_principal_id = DATABASE_PRINCIPAL_ID(staff_role.RoleName)
+          AND perm.permission_name = N'EXECUTE'
+          AND perm.state = N'G'
+    )
+)
+BEGIN
+    ;THROW 50122, 'QUANLY and THUTHU must have EXECUTE on the borrow/return procedures.', 1;
+END;
+
 IF DATABASE_PRINCIPAL_ID(N'library_app_role') IS NULL
 BEGIN
     ;THROW 50107, 'The shared application database role is missing.', 1;

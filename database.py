@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, List, Sequence, Set, Tuple
 import pyodbc
 
 from pathlib import Path
@@ -384,6 +384,30 @@ def call_write(sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
             rows = fetch_dicts(cursor)
             conn.commit()
             return rows[0] if rows else None
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def call_write_many(calls: Sequence[Tuple[str, tuple]]) -> List[Optional[Dict[str, Any]]]:
+    """Run several writing ``EXEC`` calls as ONE unit: all commit, or none do.
+
+    Each call runs on the same connection with autocommit off, so the driver
+    holds one outer transaction around them. A procedure's own
+    BEGIN/COMMIT TRANSACTION nests inside it; a THROW makes the procedure
+    ROLLBACK, which undoes every earlier call too. Returns each call's first
+    result row (or None), in order.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            results: List[Optional[Dict[str, Any]]] = []
+            for sql, params in calls:
+                cursor.execute(sql, params)
+                rows = fetch_dicts(cursor)
+                results.append(rows[0] if rows else None)
+            conn.commit()
+            return results
         except Exception:
             conn.rollback()
             raise

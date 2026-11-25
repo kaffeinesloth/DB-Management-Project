@@ -1,14 +1,34 @@
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-from database import get_connection, friendly_message
-from reader_management.reader_actions import ReaderActions, DocGiaDAO
-from book_management.book_actions import BookActions, SachDAO
+from typing import Any, Callable, Dict, List, Tuple, TypeVar
+
+from database import call_write, call_write_many, friendly_message, get_connection
+
+T = TypeVar("T")
+
+
+def _call_procedure(runner: Callable[..., T], *args: Any, action: str) -> T:
+    """Run a borrowing procedure and turn SQL Server errors into UI exceptions.
+
+    THROW 5xxxx from the procedures (and FK / permission errors) become
+    ValueError with the server's Vietnamese text; anything else RuntimeError.
+    The procedure has already rolled its transaction back by then.
+    """
+    try:
+        return runner(*args)
+    except (ValueError, PermissionError):
+        raise
+    except Exception as error:
+        message = friendly_message(error, "phiếu mượn")
+        if message:
+            raise ValueError(message) from error
+        raise RuntimeError(f"Lỗi SQL Server khi {action}: {error}") from error
+
 
 class MuonTraDAO:
     """
     Data Access Object (DAO) quản lý toàn bộ quy trình nghiệp vụ Mượn / Trả sách và Tính Phạt.
-    Khai thác trực tiếp VIEW v_ChiTietPhieuMuon_Phat và TRIGGER trg_DongBoTrangThaiSach:
-    - Thẻ độc giả: Còn hạn & Hoạt động (Filtered Index UQ_DOCGIA_SOCMND_ACTIVE).
+    Mượn / trả là giao tác trên SQL Server (sql/09_borrowing_transactions.sql):
+    Python chỉ gửi EXEC; mọi kiểm tra, khóa và ghi dữ liệu nằm trong 1 TRANSACTION.
+    - Thẻ độc giả: Còn hạn & Hoạt động.
     - Giới hạn tối đa 3 cuốn sách chưa trả.
     - Sách mượn phải sẵn sàng (CHOMUON = 0, TINHTRANG = 1) với kiểm tra nguyên tử chống Race Condition.
     - Phạt trễ hạn 500đ/ngày nếu mượn mang về quá 30 ngày.
@@ -63,79 +83,28 @@ class MuonTraDAO:
     @staticmethod
     def tao_phieu_muon(madg: int, manv: int, hinh_thuc: int, danh_sach_masach: List[str]) -> int:
         """
-        Tạo phiếu mượn sách mới với kiểm tra toàn bộ ràng buộc nghiệp vụ:
-        1. Thẻ độc giả hợp lệ (còn hạn, hoạt động, chưa giữ quá 3 cuốn).
-        2. Tổng sách mượn + đang giữ không vượt quá 3.
-        3. Từng cuốn sách phải sẵn sàng (CHOMUON = 0, TINHTRANG = 1).
-        4. Atomic Check & Lock: Ngăn ngừa triệt để Race Condition khi nhiều thủ thư cùng mượn 1 sách.
-        5. Ghi nhận PHIEUMUON, CT_PHIEUMUON trong 1 Transaction an toàn.
+        Lập phiếu mượn bằng một lời gọi dbo.sp_PhieuMuon_Tao (sql/09_borrowing_transactions.sql).
+
+        Toàn bộ nghiệp vụ chạy trong 1 TRANSACTION trên SQL Server: kiểm tra thẻ
+        (54102/54103), giới hạn 3 cuốn (54101/54104), khóa nguyên tử từng cuốn
+        sách (54105), rồi ghi PHIEUMUON + CT_PHIEUMUON. Lỗi bất kỳ -> ROLLBACK.
+        Trả về MAPHIEU vừa tạo.
         """
-        if not danh_sach_masach:
+        masach_list = [str(ms).strip() for ms in danh_sach_masach or [] if str(ms).strip()]
+        if not masach_list:
             raise ValueError("Danh sách sách mượn không được để trống!")
+        if any("," in ms for ms in masach_list):
+            raise ValueError("Mã sách không được chứa dấu phẩy!")
 
-        if len(danh_sach_masach) > 3:
-            raise ValueError("Mỗi lần mượn không được vượt quá 3 cuốn sách!")
-
-        # 1. Kiểm tra thẻ độc giả
-        hop_le, ly_do, dang_giu = DocGiaDAO.kiem_tra_the_hop_le_muon_sach(madg)
-        if not hop_le:
-            raise ValueError(ly_do)
-
-        if dang_giu + len(danh_sach_masach) > 3:
-            raise ValueError(
-                f"Độc giả đang giữ {dang_giu} cuốn. Muốn mượn thêm {len(danh_sach_masach)} cuốn "
-                f"sẽ vượt quá giới hạn tối đa 3 cuốn/độc giả!"
-            )
-
-        # 2. Kiểm tra tính sẵn sàng của từng cuốn sách
-        sach_info_list = []
-        for ms in danh_sach_masach:
-            ok, msg, info = SachDAO.kiem_tra_sach_cho_muon(ms)
-            if not ok:
-                raise ValueError(msg)
-            sach_info_list.append(info)
-
-        # 3. Thực thi Transaction nguyên tử
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                # 3.1. Insert PHIEUMUON
-                query_pm = """
-                    INSERT INTO dbo.PHIEUMUON (MADG, HINHTHUC, NGAYMUON, MANV)
-                    OUTPUT INSERTED.MAPHIEU
-                    VALUES (?, ?, GETDATE(), ?);
-                """
-                cursor.execute(query_pm, (madg, hinh_thuc, manv))
-                maphieu = cursor.fetchone()[0]
-
-                # 3.2. Atomic Update & Lock cuốn sách chống Race Condition
-                query_lock_sach = """
-                    UPDATE dbo.SACH 
-                    SET CHOMUON = 1 
-                    WHERE MASACH = ? AND CHOMUON = 0 AND TINHTRANG = 1;
-                """
-                query_ct = """
-                    INSERT INTO dbo.CT_PHIEUMUON (MAPHIEU, MASACH, TINHTRANGMUON, TRA)
-                    VALUES (?, ?, 1, 0);
-                """
-
-                for info in sach_info_list:
-                    cursor.execute(query_lock_sach, (info["MASACH"],))
-                    if cursor.rowcount == 0:
-                        raise ValueError(f"Sách '{info['MASACH']}' ({info['TENSACH']}) vừa có người khác mượn hoặc không khả dụng!")
-                    cursor.execute(query_ct, (maphieu, info["MASACH"]))
-
-                conn.commit()
-                return maphieu
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as e:
-                conn.rollback()
-                msg = friendly_message(e, "phiếu mượn")
-                if msg:
-                    raise ValueError(msg) from e
-                raise RuntimeError(f"Lỗi khi lập phiếu mượn: {e}") from e
+        row = _call_procedure(
+            call_write,
+            "EXEC dbo.sp_PhieuMuon_Tao @MADG=?, @MANV=?, @HinhThuc=?, @DanhSachMaSach=?",
+            (int(madg), int(manv), 1 if int(hinh_thuc) else 0, ",".join(masach_list)),
+            action="lập phiếu mượn",
+        )
+        if not row or row.get("MAPHIEU") is None:
+            raise RuntimeError("SQL Server không trả về mã phiếu mượn vừa tạo!")
+        return int(row["MAPHIEU"])
 
     @staticmethod
     def tinh_toan_phi_phat(maphieu: int, masach: str, tinh_trang_tra: int, bi_mat: bool = False) -> Dict[str, Any]:
@@ -192,57 +161,21 @@ class MuonTraDAO:
     @staticmethod
     def xac_nhan_tra_sach(maphieu: int, masach: str, manvns: int, tinh_trang_tra: int, bi_mat: bool = False) -> Dict[str, Any]:
         """
-        Xác nhận trả sách:
-        1. Tính toán tiền phạt.
-        2. Cập nhật CT_PHIEUMUON: TRA = 1, NGAYTRA = GETDATE(), MANVNS = manvns.
-           (Trigger trg_DongBoTrangThaiSach sẽ tự động đặt SACH.CHOMUON = 0).
-        3. Cập nhật SACH.TINHTRANG nếu sách bị hỏng hoặc mất.
+        Xác nhận trả 1 cuốn bằng dbo.sp_PhieuMuon_XacNhanTra, trong 1 TRANSACTION:
+        tính phạt (trễ hạn / mất 100% / hỏng 50% giá bìa), đóng dòng CT_PHIEUMUON,
+        cập nhật SACH (CHOMUON = 0, TINHTRANG = 0 nếu mất hoặc hỏng).
+        Trả về chi tiết tiền phạt do SQL Server tính.
         """
-        maphieu_val = int(maphieu)
-        masach_val = str(masach)
-        manvns_val = int(manvns)
-        tinh_trang_tra_val = int(tinh_trang_tra)
-
-        phi_phat = MuonTraDAO.tinh_toan_phi_phat(
-            maphieu=maphieu_val, 
-            masach=masach_val, 
-            tinh_trang_tra=tinh_trang_tra_val, 
-            bi_mat=bi_mat
+        row = _call_procedure(
+            call_write,
+            "EXEC dbo.sp_PhieuMuon_XacNhanTra @MAPHIEU=?, @MASACH=?, @MANVNS=?, @TinhTrangTra=?, @BiMat=?",
+            (int(maphieu), str(masach).strip(), int(manvns),
+             1 if int(tinh_trang_tra) else 0, 1 if bi_mat else 0),
+            action="ghi nhận trả sách",
         )
-
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                # 1. Cập nhật CT_PHIEUMUON (Trigger trg_DongBoTrangThaiSach tự động cập nhật SACH.CHOMUON = 0)
-                query_ct = """
-                    UPDATE dbo.CT_PHIEUMUON
-                    SET TRA = 1,
-                        NGAYTRA = GETDATE(),
-                        MANVNS = ?
-                    WHERE MAPHIEU = ? AND MASACH = ?;
-                """
-                cursor.execute(query_ct, (manvns_val, maphieu_val, masach_val))
-
-                # 2. Cập nhật tình trạng sách nếu bị hư hỏng hoặc mất
-                sach_tinh_trang = 0 if bi_mat else tinh_trang_tra_val
-                query_sach = """
-                    UPDATE dbo.SACH
-                    SET TINHTRANG = ?
-                    WHERE MASACH = ?;
-                """
-                cursor.execute(query_sach, (sach_tinh_trang, masach_val))
-
-                conn.commit()
-                return phi_phat
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as e:
-                conn.rollback()
-                msg = friendly_message(e, "trả sách")
-                if msg:
-                    raise ValueError(msg) from e
-                raise RuntimeError(f"Lỗi khi ghi nhận trả sách: {e}") from e
+        if not row:
+            raise RuntimeError("SQL Server không trả về kết quả tiền phạt!")
+        return row
 
     @staticmethod
     def get_chi_tiet_phieu_gom_nhom(maphieu: int) -> List[Dict[str, Any]]:
@@ -275,105 +208,43 @@ class MuonTraDAO:
     @staticmethod
     def xac_nhan_tra_sach_theo_so_luong(maphieu: int, danh_sach_tra: List[Dict[str, Any]], manvns: int) -> Dict[str, Any]:
         """
-        Xác nhận trả sách gom nhóm theo số lượng và tình trạng cho từng ISBN.
-        danh_sach_tra: List các dict gồm {
-            "ISBN": str,
-            "SoLuong": int,
-            "TinhTrangTra": int (1: Bình thường, 0: Hỏng),
-            "BiMat": bool
-        }
-        Tự động chọn TOP N mã sách chưa trả (TRA = 0) tương ứng để cập nhật.
-        Thực hiện toàn bộ trong 1 Transaction an toàn.
+        Trả sách gom nhóm theo ISBN. danh_sach_tra là list dict {
+            "ISBN": str, "SoLuong": int,
+            "TinhTrangTra": int (1: Bình thường, 0: Hỏng), "BiMat": bool
+        }.
+        Mỗi ISBN là một lời gọi dbo.sp_PhieuMuon_TraTheoISBN (tự chọn TOP N cuốn
+        chưa trả). Tất cả lời gọi chạy chung 1 giao tác (call_write_many): một
+        ISBN lỗi thì toàn bộ lần trả bị ROLLBACK.
         """
         maphieu_val = int(maphieu)
         manvns_val = int(manvns)
 
-        if not danh_sach_tra:
-            raise ValueError("Chưa chọn mục sách nào để trả!")
+        calls: List[Tuple[str, tuple]] = []
+        for item in danh_sach_tra or []:
+            so_luong = int(item["SoLuong"])
+            if so_luong <= 0:
+                continue
+            calls.append((
+                "EXEC dbo.sp_PhieuMuon_TraTheoISBN @MAPHIEU=?, @ISBN=?, @SoLuong=?, "
+                "@MANVNS=?, @TinhTrangTra=?, @BiMat=?",
+                (maphieu_val, str(item["ISBN"]).strip(), so_luong, manvns_val,
+                 1 if int(item.get("TinhTrangTra", 1)) else 0,
+                 1 if item.get("BiMat", False) else 0),
+            ))
 
-        tong_so_cuon_tra = 0
-        tong_tien_phat_tre = 0
-        tong_tien_mat_sach = 0
-        tong_tien_phat_hong = 0
+        if not calls:
+            raise ValueError("Chưa có cuốn sách nào được chọn để trả!")
 
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                for item in danh_sach_tra:
-                    isbn = str(item["ISBN"])
-                    so_luong = int(item["SoLuong"])
-                    tinh_trang_tra = int(item.get("TinhTrangTra", 1))
-                    bi_mat = bool(item.get("BiMat", False))
+        rows = _call_procedure(call_write_many, calls, action="ghi nhận trả sách gom nhóm")
 
-                    if so_luong <= 0:
-                        continue
-
-                    # 1. Tìm TOP N mã sách chưa trả thuộc ISBN này trong phiếu
-                    query_find = """
-                        SELECT TOP (?) ct.MASACH
-                        FROM dbo.CT_PHIEUMUON ct
-                        JOIN dbo.SACH s ON ct.MASACH = s.MASACH
-                        WHERE ct.MAPHIEU = ? AND s.ISBN = ? AND ct.TRA = 0;
-                    """
-                    cursor.execute(query_find, (so_luong, maphieu_val, isbn))
-                    masach_rows = cursor.fetchall()
-
-                    if len(masach_rows) < so_luong:
-                        raise ValueError(f"Số lượng sách chưa trả còn lại của ISBN {isbn} chỉ còn {len(masach_rows)} cuốn, không đủ để trả {so_luong} cuốn!")
-
-                    masach_list = [r[0] for r in masach_rows]
-
-                    # 2. Xử lý từng mã sách
-                    for masach in masach_list:
-                        # Tính phí phạt cho từng cuốn
-                        phi = MuonTraDAO.tinh_toan_phi_phat(maphieu_val, masach, tinh_trang_tra, bi_mat)
-                        tong_tien_phat_tre += phi["TienPhatTre"]
-                        tong_tien_mat_sach += phi["TienMatSach"]
-                        tong_tien_phat_hong += phi["TienPhatHong"]
-                        tong_so_cuon_tra += 1
-
-                        # Cập nhật CT_PHIEUMUON
-                        query_ct = """
-                            UPDATE dbo.CT_PHIEUMUON
-                            SET TRA = 1,
-                                NGAYTRA = GETDATE(),
-                                MANVNS = ?
-                            WHERE MAPHIEU = ? AND MASACH = ?;
-                        """
-                        cursor.execute(query_ct, (manvns_val, maphieu_val, masach))
-
-                        # Cập nhật tình trạng SACH
-                        sach_tinh_trang = 0 if bi_mat else tinh_trang_tra
-                        query_sach = """
-                            UPDATE dbo.SACH
-                            SET TINHTRANG = ?
-                            WHERE MASACH = ?;
-                        """
-                        cursor.execute(query_sach, (sach_tinh_trang, masach))
-
-                if tong_so_cuon_tra == 0:
-                    raise ValueError("Chưa có cuốn sách nào được chọn để trả!")
-
-                conn.commit()
-
-                tong_phat = tong_tien_phat_tre + tong_tien_mat_sach + tong_tien_phat_hong
-                return {
-                    "TongSoCuonTra": tong_so_cuon_tra,
-                    "TienPhatTre": tong_tien_phat_tre,
-                    "TienMatSach": tong_tien_mat_sach,
-                    "TienPhatHong": tong_tien_phat_hong,
-                    "TongPhat": tong_phat
-                }
-            except ValueError:
-                conn.rollback()
-                raise
-            except Exception as e:
-                conn.rollback()
-                msg = friendly_message(e, "trả sách")
-                if msg:
-                    raise ValueError(msg) from e
-                raise RuntimeError(f"Lỗi khi ghi nhận trả sách gom nhóm: {e}") from e
-
+        tong = {"TongSoCuonTra": 0, "TienPhatTre": 0, "TienMatSach": 0, "TienPhatHong": 0, "TongPhat": 0}
+        for row in rows:
+            if not row:
+                raise RuntimeError("SQL Server không trả về kết quả trả sách theo ISBN!")
+            tong["TongSoCuonTra"] += int(row["SoCuonTra"] or 0)
+            for key in ("TienPhatTre", "TienMatSach", "TienPhatHong", "TongPhat"):
+                tong[key] += int(row[key] or 0)
+        return tong
 
 
 # Bí danh tương thích
