@@ -329,5 +329,209 @@ BEGIN CATCH
 END CATCH;
 
 SELECT N'PASS' AS Result, N'Server-side Reader/Book procedures' AS TestName;
+GO
+
+/* Borrow/return transactions (09_borrowing_transactions.sql).
+   Test rows are picked from the current data so the test does not depend on
+   which copies are on loan today. The happy path runs inside an outer
+   transaction that is rolled back; error paths run on their own and must
+   leave no trace (each procedure rolls back its own work). */
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+DECLARE @Manv INT, @Reader BIGINT, @Isbn CHAR(10), @Gia BIGINT;
+DECLARE @B1 VARCHAR(10), @B2 VARCHAR(10), @B3 VARCHAR(10), @List NVARCHAR(500);
+DECLARE @MaPhieu BIGINT, @LoansBefore INT, @Err INT;
+DECLARE @NewLoan TABLE (MAPHIEU BIGINT);
+DECLARE @OneFine TABLE (
+    MAPHIEU BIGINT, MASACH VARCHAR(10), TENSACH NVARCHAR(100), GiaBia BIGINT,
+    SoNgayDaMuon INT, SoNgayTre INT, TienPhatTre BIGINT, TienMatSach BIGINT,
+    TienPhatHong BIGINT, TongPhat BIGINT);
+DECLARE @BatchFine TABLE (
+    MAPHIEU BIGINT, ISBN CHAR(10), SoCuonTra INT, TienPhatTre BIGINT,
+    TienMatSach BIGINT, TienPhatHong BIGINT, TongPhat BIGINT);
+DECLARE @Free TABLE (MASACH VARCHAR(10) PRIMARY KEY, ISBN CHAR(10));
+
+SELECT TOP (1) @Manv = MANV FROM dbo.NHANVIEN ORDER BY MANV;
+
+/* A reader whose card is valid and who holds no book. */
+SELECT TOP (1) @Reader = dg.MADG
+FROM dbo.DOCGIA AS dg
+WHERE dg.HOATDONG = 1 AND dg.NGAYHETHAN >= GETDATE()
+  AND NOT EXISTS (
+      SELECT 1 FROM dbo.CT_PHIEUMUON AS ct
+      JOIN dbo.PHIEUMUON AS pm ON pm.MAPHIEU = ct.MAPHIEU
+      JOIN dbo.DOCGIA AS same ON same.MADG = pm.MADG
+      WHERE same.SOCMND = dg.SOCMND AND ct.TRA = 0)
+ORDER BY dg.MADG;
+
+INSERT INTO @Free (MASACH, ISBN)
+SELECT MASACH, ISBN FROM dbo.SACH WHERE CHOMUON = 0 AND TINHTRANG = 1;
+
+/* Two free copies of one title (for the by-ISBN return) and one other copy. */
+SELECT TOP (1) @Isbn = ISBN FROM @Free GROUP BY ISBN HAVING COUNT(*) >= 2 ORDER BY ISBN;
+SELECT @B1 = MIN(MASACH), @B2 = MAX(MASACH) FROM (
+    SELECT TOP (2) MASACH FROM @Free WHERE ISBN = @Isbn ORDER BY MASACH) AS two;
+SELECT TOP (1) @B3 = MASACH FROM @Free WHERE ISBN <> @Isbn ORDER BY MASACH;
+SELECT @Gia = ISNULL(GIA, 0) FROM dbo.ISBN WHERE ISBN = @Isbn;
+
+IF @Manv IS NULL OR @Reader IS NULL OR @B1 IS NULL OR @B3 IS NULL
+    THROW 50230, 'Sample data lacks a free reader or free copies for the borrowing tests.', 1;
+
+SET @List = CONCAT(@B1, N',', @B2, N',', @B3);
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    /* Lend three copies in one call. */
+    INSERT INTO @NewLoan EXEC dbo.sp_PhieuMuon_Tao
+        @MADG = @Reader, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @List;
+    SELECT @MaPhieu = MAPHIEU FROM @NewLoan;
+
+    IF @MaPhieu IS NULL
+       OR (SELECT COUNT(*) FROM dbo.CT_PHIEUMUON WHERE MAPHIEU = @MaPhieu AND TRA = 0) <> 3
+       OR EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH IN (@B1, @B2, @B3) AND CHOMUON <> 1)
+        THROW 50231, 'sp_PhieuMuon_Tao did not write the loan and lock the copies.', 1;
+
+    /* Return @B3 damaged: 50% fine, copy becomes unusable. */
+    INSERT INTO @OneFine EXEC dbo.sp_PhieuMuon_XacNhanTra
+        @MAPHIEU = @MaPhieu, @MASACH = @B3, @MANVNS = @Manv, @TinhTrangTra = 0, @BiMat = 0;
+
+    IF NOT EXISTS (
+            SELECT 1 FROM @OneFine AS f
+            JOIN dbo.SACH AS s ON s.MASACH = f.MASACH
+            JOIN dbo.ISBN AS i ON i.ISBN = s.ISBN
+            WHERE f.TienPhatHong = ISNULL(i.GIA, 0) / 2 AND f.TienMatSach = 0 AND f.TienPhatTre = 0
+              AND s.CHOMUON = 0 AND s.TINHTRANG = 0)
+       OR NOT EXISTS (SELECT 1 FROM dbo.CT_PHIEUMUON
+                      WHERE MAPHIEU = @MaPhieu AND MASACH = @B3 AND TRA = 1 AND MANVNS = @Manv)
+        THROW 50232, 'sp_PhieuMuon_XacNhanTra did not return the copy with a 50% damage fine.', 1;
+
+    ROLLBACK TRANSACTION;
+    SELECT N'PASS' AS Result, N'Borrow transaction and single return' AS TestName;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+
+/* By-ISBN return of two lost copies: 100% of the cover price each. */
+BEGIN TRY
+    BEGIN TRANSACTION;
+    DELETE FROM @NewLoan;
+
+    INSERT INTO @NewLoan EXEC dbo.sp_PhieuMuon_Tao
+        @MADG = @Reader, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @List;
+    SELECT @MaPhieu = MAPHIEU FROM @NewLoan;
+
+    INSERT INTO @BatchFine EXEC dbo.sp_PhieuMuon_TraTheoISBN
+        @MAPHIEU = @MaPhieu, @ISBN = @Isbn, @SoLuong = 2, @MANVNS = @Manv,
+        @TinhTrangTra = 0, @BiMat = 1;
+
+    IF NOT EXISTS (SELECT 1 FROM @BatchFine
+                   WHERE SoCuonTra = 2 AND TienMatSach = 2 * @Gia AND TienPhatHong = 0
+                     AND TongPhat = 2 * @Gia)
+       OR EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH IN (@B1, @B2) AND (CHOMUON <> 0 OR TINHTRANG <> 0))
+       OR NOT EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH = @B3 AND CHOMUON = 1)
+        THROW 50234, 'sp_PhieuMuon_TraTheoISBN did not return the two lost copies correctly.', 1;
+
+    ROLLBACK TRANSACTION;
+    SELECT N'PASS' AS Result, N'Return by ISBN (lost copies)' AS TestName;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+
+/* Rule violations: each THROWs its number and writes nothing. */
+SELECT @LoansBefore = COUNT(*) FROM dbo.PHIEUMUON;
+
+BEGIN TRY
+    EXEC dbo.sp_PhieuMuon_Tao @MADG = @Reader, @MANV = @Manv, @HinhThuc = 1,
+        @DanhSachMaSach = N'S0001,S0002,S0003,S0004';
+    THROW 50235, 'Four copies in one loan were accepted.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54101 THROW;
+END CATCH;
+
+BEGIN TRY
+    SET @List = CONCAT(@B1, N',', @B1);
+    EXEC dbo.sp_PhieuMuon_Tao @MADG = @Reader, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @List;
+    THROW 50236, 'A duplicated copy code was accepted.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54106 THROW;
+END CATCH;
+
+/* Rollback: one free copy plus one that is unusable or on loan. The free copy
+   must stay free and no PHIEUMUON row may remain. */
+BEGIN TRY
+    SELECT TOP (1) @List = CONCAT(@B1, N',', MASACH)
+    FROM dbo.SACH WHERE CHOMUON = 1 OR TINHTRANG = 0 ORDER BY MASACH;
+    EXEC dbo.sp_PhieuMuon_Tao @MADG = @Reader, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @List;
+    THROW 50237, 'An unavailable copy was lent.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54105 THROW;
+END CATCH;
+
+IF (SELECT COUNT(*) FROM dbo.PHIEUMUON) <> @LoansBefore
+   OR EXISTS (SELECT 1 FROM dbo.SACH WHERE MASACH = @B1 AND CHOMUON <> 0)
+    THROW 50238, 'A failed loan left data behind (transaction was not rolled back).', 1;
+
+BEGIN TRY
+    EXEC dbo.sp_PhieuMuon_Tao @MADG = -1, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @B1;
+    THROW 50239, 'A missing reader card was accepted.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54102 THROW;
+END CATCH;
+
+/* Limit: a reader who holds N books cannot take (4 - N) more. */
+DECLARE @Holder BIGINT, @Held INT;
+SELECT TOP (1) @Holder = dg.MADG, @Held = COUNT(*)
+FROM dbo.DOCGIA AS dg
+JOIN dbo.PHIEUMUON AS pm ON pm.MADG = dg.MADG
+JOIN dbo.CT_PHIEUMUON AS ct ON ct.MAPHIEU = pm.MAPHIEU AND ct.TRA = 0
+WHERE dg.HOATDONG = 1 AND dg.NGAYHETHAN >= GETDATE()
+GROUP BY dg.MADG
+ORDER BY dg.MADG;
+
+IF @Holder IS NOT NULL
+BEGIN
+    SELECT @List = STRING_AGG(MASACH, ',')
+    FROM (SELECT TOP (4 - @Held) MASACH FROM @Free ORDER BY MASACH) AS extra;
+    BEGIN TRY
+        EXEC dbo.sp_PhieuMuon_Tao @MADG = @Holder, @MANV = @Manv, @HinhThuc = 1, @DanhSachMaSach = @List;
+        THROW 50241, 'The three-book limit was not enforced.', 1;
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() <> 54104 THROW;
+    END CATCH;
+END;
+
+/* A loan line that was already returned cannot be returned again. */
+DECLARE @ReturnedLoan BIGINT, @ReturnedBook VARCHAR(10);
+SELECT TOP (1) @ReturnedLoan = MAPHIEU, @ReturnedBook = MASACH
+FROM dbo.CT_PHIEUMUON WHERE TRA = 1 ORDER BY MAPHIEU;
+
+BEGIN TRY
+    EXEC dbo.sp_PhieuMuon_XacNhanTra @MAPHIEU = @ReturnedLoan, @MASACH = @ReturnedBook, @MANVNS = @Manv;
+    THROW 50233, 'A copy was returned twice.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54111 THROW;
+END CATCH;
+
+BEGIN TRY
+    EXEC dbo.sp_PhieuMuon_TraTheoISBN @MAPHIEU = -1, @ISBN = @Isbn, @SoLuong = 1, @MANVNS = @Manv;
+    THROW 50240, 'A by-ISBN return without open loan lines was accepted.', 1;
+END TRY
+BEGIN CATCH
+    IF ERROR_NUMBER() <> 54114 THROW;
+END CATCH;
+
+SELECT N'PASS' AS Result, N'Borrow/return rule violations roll back' AS TestName;
 SELECT N'ALL_DATABASE_SMOKE_TESTS_PASSED' AS Result;
 GO

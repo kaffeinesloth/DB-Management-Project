@@ -99,6 +99,9 @@ run_script /docker-init/sql/06_reports.sql
 # Server-side Reader/Book procedures grant EXECUTE to roles created in 03.
 run_script /docker-init/sql/08_server_side_crud.sql
 
+# Borrow/return transactions also grant EXECUTE to the roles created in 03.
+run_script /docker-init/sql/09_borrowing_transactions.sql
+
 run_script /docker-init/sql/05_verify_database.sql
 
 echo "Database initialization completed successfully."

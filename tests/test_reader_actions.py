@@ -355,28 +355,6 @@ class BorrowingFixesTests(unittest.TestCase):
         self.assertEqual(dummy._parse_madg_input("  7  "), "7")
         self.assertEqual(dummy._parse_madg_input("-- Chọn hoặc gõ mã ĐG --"), "")
 
-    @patch("borrowing_and_returns.borrowing_actions.get_connection")
-    @patch("borrowing_and_returns.borrowing_actions.SachDAO.kiem_tra_sach_cho_muon")
-    @patch("borrowing_and_returns.borrowing_actions.DocGiaDAO.kiem_tra_the_hop_le_muon_sach")
-    def test_tao_phieu_muon_reraises_value_error_without_runtime_wrapping(
-        self, mock_check_dg, mock_check_sach, mock_get_conn
-    ):
-        from unittest.mock import MagicMock
-        from borrowing_and_returns.borrowing_actions import MuonTraDAO
-        mock_check_dg.return_value = (True, "OK", 0)
-        mock_check_sach.return_value = (True, "OK", {"MASACH": "S0001", "TENSACH": "Mắt biếc"})
-
-        conn = MagicMock()
-        conn.__enter__.return_value = conn
-        cursor = conn.cursor.return_value
-        cursor.fetchone.return_value = (101,)
-        cursor.rowcount = 0
-        mock_get_conn.return_value = conn
-
-        with self.assertRaisesRegex(ValueError, "vừa có người khác mượn"):
-            MuonTraDAO.tao_phieu_muon(1, 1, 1, ["S0001"])
-        conn.rollback.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()
