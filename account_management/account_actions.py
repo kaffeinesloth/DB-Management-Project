@@ -106,10 +106,14 @@ def validate_new_employee(
     }
 
 
-def list_employee_accounts() -> List[Dict[str, Any]]:
+def _fetch_employee_accounts(without_account_only: bool = False) -> List[Dict[str, Any]]:
+    """Run sp_DanhSachTaiKhoanNhanVien; filtering happens on SQL Server."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("EXEC dbo.sp_DanhSachTaiKhoanNhanVien")
+        if without_account_only:
+            cursor.execute("EXEC dbo.sp_DanhSachTaiKhoanNhanVien @ChuaCoTaiKhoan=?", 1)
+        else:
+            cursor.execute("EXEC dbo.sp_DanhSachTaiKhoanNhanVien")
         return [
             {
                 "MANV": row[0],
@@ -121,6 +125,10 @@ def list_employee_accounts() -> List[Dict[str, Any]]:
             }
             for row in cursor.fetchall()
         ]
+
+
+def list_employee_accounts() -> List[Dict[str, Any]]:
+    return _fetch_employee_accounts()
 
 
 def create_employee_account(
@@ -175,8 +183,9 @@ def list_employees_without_account() -> List[Dict[str, Any]]:
     Reuses sp_DanhSachTaiKhoanNhanVien (EXECUTE AS OWNER) because reading other
     users from sys.database_principals needs elevated metadata visibility; a
     plain VIEW would see no accounts and list everyone as eligible.
+    The "no account yet" filter runs on SQL Server (@ChuaCoTaiKhoan = 1).
     """
-    return [row for row in list_employee_accounts() if not row["DaCoTaiKhoan"]]
+    return _fetch_employee_accounts(without_account_only=True)
 
 
 def change_own_password(old_password: str, new_password: str, confirm_password: str) -> None:
@@ -198,12 +207,20 @@ def change_own_password(old_password: str, new_password: str, confirm_password: 
     CURRENT_SESSION["password"] = new_password
 
 
-def reset_employee_password(employee_id: int) -> str:
-    """Manager resets another employee's password to the default value."""
-    employee_id = _positive_id(employee_id)
+def reset_employee_password(login_name: str) -> str:
+    """Manager resets another employee's password to the default value.
+
+    The LoginName shown in the account list is passed straight to the stored
+    procedure; SQL Server checks that it belongs to an employee account.
+    """
+    if not isinstance(login_name, str) or not login_name.strip():
+        raise ValueError("Vui lòng chọn tài khoản cần reset mật khẩu.")
+    login = login_name.strip()
+    if len(login) > MAX_LOGIN_LENGTH:
+        raise ValueError("Tên đăng nhập tối đa 128 ký tự.")
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("EXEC dbo.sp_ResetMatKhauNhanVien @MANV=?", employee_id)
+        cursor.execute("EXEC dbo.sp_ResetMatKhauNhanVien @LoginName=?", login)
         conn.commit()
     return DEFAULT_RESET_PASSWORD
 

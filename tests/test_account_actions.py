@@ -183,6 +183,42 @@ class LoginNameAndPasswordRules(unittest.TestCase):
                 change_own_password(*args)
 
 
+class ServerSideAccountCallsTests(unittest.TestCase):
+    """Criteria 2 & 3: filtering and the reset target are handled by SQL Server."""
+
+    def _connection(self):
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        return conn, conn.cursor.return_value
+
+    def test_reset_password_passes_login_name_straight_to_procedure(self):
+        from account_management.account_actions import reset_employee_password
+        conn, cursor = self._connection()
+        with patch("account_management.account_actions.get_connection", return_value=conn):
+            self.assertEqual(reset_employee_password("  nv_hoa "), "123456")
+        cursor.execute.assert_called_once_with(
+            "EXEC dbo.sp_ResetMatKhauNhanVien @LoginName=?", "nv_hoa")
+        conn.commit.assert_called_once()
+
+    def test_reset_password_rejects_blank_login_before_database(self):
+        from account_management.account_actions import reset_employee_password
+        with patch("account_management.account_actions.get_connection") as get_conn:
+            for bad in ("", "   ", None):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    reset_employee_password(bad)
+            get_conn.assert_not_called()
+
+    def test_employees_without_account_are_filtered_on_server(self):
+        from account_management.account_actions import list_employees_without_account
+        conn, cursor = self._connection()
+        cursor.fetchall.return_value = [(4, "Lê Hoa", "hoa@x.vn", 0, None, None)]
+        with patch("account_management.account_actions.get_connection", return_value=conn):
+            rows = list_employees_without_account()
+        cursor.execute.assert_called_once_with(
+            "EXEC dbo.sp_DanhSachTaiKhoanNhanVien @ChuaCoTaiKhoan=?", 1)
+        self.assertEqual([r["MANV"] for r in rows], [4])
+
+
 class SqlErrorCodeTests(unittest.TestCase):
     def test_extracts_native_codes(self):
         self.assertIn(547, sql_error_codes(FK_ERROR))

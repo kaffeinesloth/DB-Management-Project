@@ -433,7 +433,7 @@ class AccountScreen(ctk.CTkFrame):
         ):
             return
         try:
-            password = reset_employee_password(row["MANV"])
+            password = reset_employee_password(row["LoginName"])
         except (pyodbc.Error, ValueError) as error:
             messagebox.showerror("Không thể reset", _friendly_db_error(error))
             return

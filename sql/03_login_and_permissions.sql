@@ -412,6 +412,7 @@ GO
    ============================================================ */
 
 CREATE OR ALTER PROCEDURE dbo.sp_DanhSachTaiKhoanNhanVien
+    @ChuaCoTaiKhoan BIT = NULL   -- NULL = all, 1 = only employees without an account
 WITH EXECUTE AS OWNER
 AS
 BEGIN
@@ -438,6 +439,11 @@ BEGIN
         ORDER BY CASE WHEN role_dp.name = N'QUANLY' THEN 1 ELSE 2 END
     ) AS r
     WHERE nv.MANV > 0
+      AND (
+            @ChuaCoTaiKhoan IS NULL
+         OR (@ChuaCoTaiKhoan = 1 AND dp.principal_id IS NULL)
+         OR (@ChuaCoTaiKhoan = 0 AND dp.principal_id IS NOT NULL)
+      )
     ORDER BY nv.MANV;
 END;
 GO
@@ -709,27 +715,30 @@ BEGIN
 END;
 GO
 
+/* The UI already shows LoginName, so it is passed directly (no MANV -> login
+   reverse lookup). The SID guard below is a security check, not a lookup:
+   this procedure is certificate-signed with ALTER ANY LOGIN, so without it a
+   manager could reset service logins such as library_app or docgia. */
 CREATE OR ALTER PROCEDURE dbo.sp_ResetMatKhauNhanVien
-    @MANV INT
+    @LoginName SYSNAME
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @DatabaseUser SYSNAME = CONVERT(NVARCHAR(20), @MANV);
-    DECLARE @LoginName SYSNAME;
     DECLARE @Sql NVARCHAR(MAX);
 
-    IF @MANV IS NULL OR @MANV <= 0 OR NOT EXISTS (SELECT 1 FROM dbo.NHANVIEN WHERE MANV = @MANV)
-        THROW 51041, N'Mã nhân viên không hợp lệ.', 1;
-
-    SELECT @LoginName = SUSER_SNAME(sid)
-    FROM sys.database_principals
-    WHERE name = @DatabaseUser AND type = 'S';
-
+    SET @LoginName = NULLIF(LTRIM(RTRIM(@LoginName)), N'');
     IF @LoginName IS NULL
-        THROW 51042, N'Nhân viên này chưa có tài khoản.', 1;
+        THROW 51041, N'Tên đăng nhập không được để trống.', 1;
     IF @LoginName = ORIGINAL_LOGIN()
         THROW 51043, N'Không thể reset mật khẩu của chính mình. Hãy dùng chức năng Đổi mật khẩu.', 1;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.database_principals AS dp
+        JOIN dbo.NHANVIEN AS nv ON dp.name = CONVERT(NVARCHAR(20), nv.MANV)
+        WHERE dp.sid = SUSER_SID(@LoginName) AND dp.type = 'S'
+    )
+        THROW 51042, N'Tài khoản này không thuộc nhân viên nào của thư viện.', 1;
 
     SET @Sql = N'ALTER LOGIN ' + QUOTENAME(@LoginName)
              + N' WITH PASSWORD = N''123456'', CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF;';
