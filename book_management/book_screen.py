@@ -354,6 +354,7 @@ class BookScreen(ctk.CTkFrame):
             form.clear()
         if self.form:
             self.form.to_view()
+        self._apply_delete_availability()
 
     def handle_search(self):
         keyword = self.txt_search.get().strip()
@@ -387,6 +388,7 @@ class BookScreen(ctk.CTkFrame):
             return
         record = self._selected()
         if not record:
+            self._apply_delete_availability()
             return
         if self.entity == ENTITY_COPY:
             self.form.fill({
@@ -408,6 +410,35 @@ class BookScreen(ctk.CTkFrame):
                 "SOTRANG": detail.get("SOTRANG"), "KHOSACH": detail.get("KHOSACH"),
                 "LANXUATBAN": detail.get("LANXUATBAN"), "NOIDUNG": detail.get("NOIDUNG"),
             })
+        self._apply_delete_availability(record)
+
+    def _apply_delete_availability(self, record: Optional[Dict[str, Any]] = None) -> None:
+        """Disable Delete unless the selected copy/title has no dependent rows."""
+        button = self.buttons.get("delete")
+        if button is None:
+            return
+
+        can_delete = bool(record and record.get("CoTheXoa"))
+        button.configure(state="normal" if can_delete else "disabled")
+        if self.lbl_mode is None:
+            return
+        target = "cuốn sách" if self.entity == ENTITY_COPY else "đầu sách"
+        if not record:
+            self.lbl_mode.configure(
+                text=f"Chế độ xem {target} — chọn một dòng để xem chi tiết.",
+                text_color="#9CA3AF",
+            )
+            return
+        if can_delete:
+            self.lbl_mode.configure(
+                text=f"Chế độ xem {target} — chưa có dữ liệu phụ thuộc, có thể xóa.",
+                text_color="#9CA3AF",
+            )
+        else:
+            self.lbl_mode.configure(
+                text=f"🔒 {record.get('LyDoKhongDuocXoa') or 'Bản ghi đã phát sinh dữ liệu liên quan.'}",
+                text_color="#F87171",
+            )
 
     @staticmethod
     def _int_or_none(text: str, label: str) -> Optional[int]:
@@ -487,6 +518,13 @@ class BookScreen(ctk.CTkFrame):
         record = self._selected()
         if not record:
             messagebox.showwarning("Chưa chọn", "Vui lòng chọn một dòng sách cần xóa!")
+            return
+        if not bool(record.get("CoTheXoa")):
+            messagebox.showwarning(
+                "Không thể xóa",
+                record.get("LyDoKhongDuocXoa")
+                or "Bản ghi đã phát sinh dữ liệu liên quan trong hệ thống.",
+            )
             return
         if self.entity == ENTITY_COPY:
             what = f"Cuốn sách: {record['MASACH']} - {record['TENSACH']}"

@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from reader_management.reader_actions import ReaderActions
 
@@ -354,6 +354,55 @@ class BorrowingFixesTests(unittest.TestCase):
         self.assertEqual(dummy._parse_madg_input("12 | Nguyễn An (079201000001)"), "12")
         self.assertEqual(dummy._parse_madg_input("  7  "), "7")
         self.assertEqual(dummy._parse_madg_input("-- Chọn hoặc gõ mã ĐG --"), "")
+
+
+class DeleteAvailabilityTests(unittest.TestCase):
+    def test_reader_delete_state_uses_server_flag_and_reason(self):
+        from reader_management.reader_screen import ReaderScreen
+
+        screen = ReaderScreen.__new__(ReaderScreen)
+        delete = MagicMock()
+        screen.buttons = {"delete": delete}
+        screen.lbl_mode = MagicMock()
+
+        screen._apply_delete_availability()
+        delete.configure.assert_called_with(state="disabled")
+
+        delete.reset_mock()
+        screen._apply_delete_availability({"CoTheXoa": 1})
+        delete.configure.assert_called_once_with(state="normal")
+
+        delete.reset_mock()
+        screen._apply_delete_availability({
+            "CoTheXoa": 0,
+            "LyDoKhongDuocXoa": "Độc giả đã có lịch sử mượn sách.",
+        })
+        delete.configure.assert_called_once_with(state="disabled")
+        self.assertIn("lịch sử", screen.lbl_mode.configure.call_args.kwargs["text"])
+
+    def test_book_delete_state_handles_copy_title_and_non_manager(self):
+        from book_management.book_screen import BookScreen, ENTITY_COPY, ENTITY_TITLE
+
+        screen = BookScreen.__new__(BookScreen)
+        delete = MagicMock()
+        screen.buttons = {"delete": delete}
+        screen.lbl_mode = MagicMock()
+
+        screen.entity = ENTITY_COPY
+        screen._apply_delete_availability({"CoTheXoa": True})
+        delete.configure.assert_called_once_with(state="normal")
+
+        delete.reset_mock()
+        screen.entity = ENTITY_TITLE
+        screen._apply_delete_availability({
+            "CoTheXoa": False,
+            "LyDoKhongDuocXoa": "Đầu sách vẫn còn cuốn sách vật lý.",
+        })
+        delete.configure.assert_called_once_with(state="disabled")
+        self.assertIn("cuốn sách", screen.lbl_mode.configure.call_args.kwargs["text"])
+
+        screen.buttons = {"exit": MagicMock()}
+        screen._apply_delete_availability({"CoTheXoa": True})
 
 
 if __name__ == "__main__":
