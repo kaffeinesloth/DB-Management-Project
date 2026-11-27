@@ -1,12 +1,12 @@
 """Reader (library card) management screen.
 
 State machine (ui_state.FormStateController):
-    VIEW : all inputs LOCKED; Thêm / Sửa / Xóa / Thoát ON; Ghi / Phục hồi OFF.
+    VIEW : all inputs LOCKED; Thêm / Sửa / Xóa ON; Lưu / Hủy thay đổi OFF.
            Selecting a row shows it in the locked form.
     ADD  : inputs unlocked & cleared, focus "Họ đệm"; MADG shows "(tự động)" (IDENTITY).
     EDIT : inputs unlocked EXCEPT the primary key MADG and the card term.
-    Ghi  : INSERT / UPDATE via parameterized queries -> reload grid -> back to VIEW.
-    Phục hồi: discard changes, show the selected row's original data, back to VIEW.
+    Lưu : INSERT / UPDATE via parameterized queries -> reload grid -> back to VIEW.
+    Hủy thay đổi: discard changes, show the selected row's original data, back to VIEW.
     Xóa  : confirmation dialog, deletes immediately; FK error 547 -> friendly message.
 """
 
@@ -19,14 +19,14 @@ import customtkinter as ctk
 import ctk_patch  # noqa: F401  (placeholder fix for CTkEntry)
 from database import CURRENT_SESSION
 from reader_management.reader_actions import DocGiaDAO
-from ui_state import FormMode, FormStateController, build_command_bar, confirm_exit
+from ui_state import FormMode, FormStateController, build_command_bar
 
 AUTO_ID = "(tự động)"
 DURATIONS = {"6 tháng": 6, "12 tháng (1 năm)": 12, "24 tháng (2 năm)": 24, "36 tháng (3 năm)": 36}
 
 
 class ReaderScreen(ctk.CTkFrame):
-    """Danh sách độc giả + form Thêm / Sửa / Xóa / Ghi / Phục hồi."""
+    """Danh sách độc giả + form Thêm / Sửa / Xóa / Lưu / Hủy thay đổi."""
 
     def __init__(self, master, current_user: Optional[Dict[str, Any]] = None):
         super().__init__(master, fg_color="transparent")
@@ -103,13 +103,13 @@ class ReaderScreen(ctk.CTkFrame):
         hsb.grid(row=1, column=0, sticky="ew")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
-        # Standard command bar: Thêm / Sửa / Xóa / Ghi / Phục hồi / Thoát
+        # Record-level commands stay with the reader list. Form-level Lưu / Hủy
+        # actions live in the fixed footer below the form on the right.
         command_bar = ctk.CTkFrame(left, fg_color="transparent")
         command_bar.grid(row=3, column=0, padx=15, pady=(0, 6), sticky="ew")
-        self.buttons = build_command_bar(command_bar, {
+        self.buttons.update(build_command_bar(command_bar, {
             "add": self.on_add, "edit": self.on_edit, "delete": self.on_delete,
-            "save": self.on_save, "cancel": self.on_cancel, "exit": lambda: confirm_exit(self),
-        })
+        }))
 
         # Card-specific business actions (usable only while viewing)
         actions = ctk.CTkFrame(left, fg_color="transparent")
@@ -142,8 +142,15 @@ class ReaderScreen(ctk.CTkFrame):
                   foreground=[("active", "#FFFFFF"), ("!active", "#F9FAFB")])
 
     def create_right_panel(self):
-        right = ctk.CTkScrollableFrame(self, width=340, corner_radius=12)
-        right.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
+        right_panel = ctk.CTkFrame(self, width=360, corner_radius=12)
+        right_panel.grid(row=0, column=1, padx=(5, 10), pady=10, sticky="nsew")
+        right_panel.grid_rowconfigure(0, weight=1)
+        right_panel.grid_columnconfigure(0, weight=1)
+
+        # Only the fields scroll. Save/cancel remain visible at the bottom.
+        right = ctk.CTkScrollableFrame(right_panel, width=340, corner_radius=0,
+                                       fg_color="transparent")
+        right.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 4))
 
         self.lbl_form_title = ctk.CTkLabel(right, text="THÔNG TIN ĐỘC GIẢ",
                                            font=ctk.CTkFont(size=16, weight="bold"))
@@ -190,9 +197,28 @@ class ReaderScreen(ctk.CTkFrame):
                           "- Độc giả được mượn tối đa 3 cuốn sách.\n- Thời hạn mượn 30 ngày/lần.").pack(
             anchor="w", pady=(0, 15))
 
+        form_actions = ctk.CTkFrame(right_panel, fg_color="transparent")
+        form_actions.grid(row=1, column=0, padx=12, pady=(4, 12), sticky="ew")
+        form_actions.grid_columnconfigure(0, weight=1)
+        form_actions.grid_columnconfigure(1, weight=1)
+
+        btn_cancel = ctk.CTkButton(
+            form_actions, text="Hủy thay đổi", height=38,
+            fg_color="#4B5563", hover_color="#374151",
+            font=ctk.CTkFont(size=13, weight="bold"), command=self.on_cancel,
+        )
+        btn_cancel.grid(row=0, column=0, padx=(0, 5), sticky="ew")
+        btn_save = ctk.CTkButton(
+            form_actions, text="Lưu", height=38,
+            fg_color="#059669", hover_color="#047857",
+            font=ctk.CTkFont(size=13, weight="bold"), command=self.on_save,
+        )
+        btn_save.grid(row=0, column=1, padx=(5, 0), sticky="ew")
+        self.buttons = {"save": btn_save, "cancel": btn_cancel}
+
         self.state = FormStateController(
             inputs=self.fields,
-            buttons={},                        # filled in create_left_panel
+            buttons=self.buttons,               # list commands are added in create_left_panel
             key_fields=("MADG", "THOIHAN"),    # PK + card term cannot change when editing
             locked_always=("MADG",),           # IDENTITY: never typed by the user
             defaults={"MADG": AUTO_ID, "GIOITINH": "Nam", "THOIHAN": "12 tháng (1 năm)"},
@@ -204,15 +230,15 @@ class ReaderScreen(ctk.CTkFrame):
         self.tree.configure(selectmode="browse" if mode is FormMode.VIEW else "none")
         self.lbl_mode.configure(**{
             FormMode.VIEW: {"text": "Chế độ xem — chọn một dòng để xem chi tiết.", "text_color": "#9CA3AF"},
-            FormMode.ADD: {"text": "ĐANG THÊM độc giả mới — Ghi để lưu, Phục hồi để hủy.",
+            FormMode.ADD: {"text": "ĐANG THÊM độc giả mới — Lưu hoặc Hủy thay đổi.",
                            "text_color": "#60A5FA"},
-            FormMode.EDIT: {"text": "ĐANG SỬA — mã độc giả (khóa chính) bị khóa. Ghi để lưu, "
-                                    "Phục hồi để hủy.", "text_color": "#A78BFA"},
+            FormMode.EDIT: {"text": "ĐANG SỬA — mã độc giả (khóa chính) bị khóa. "
+                                     "Lưu hoặc Hủy thay đổi.", "text_color": "#A78BFA"},
         }[mode])
 
     # ---------------------------------------------------------------- data
     def load_data(self):
-        """Reload all readers (also used after every successful Ghi / Xóa)."""
+        """Reload all readers (also used after every successful Lưu / Xóa)."""
         try:
             self.display_records(DocGiaDAO.get_all())
             self.txt_search.delete(0, "end")
@@ -341,7 +367,7 @@ class ReaderScreen(ctk.CTkFrame):
         self.state.to_edit()
 
     def on_save(self):
-        """'Ghi': INSERT (Thêm) or UPDATE (Sửa), then reload and lock the form."""
+        """'Lưu': INSERT (Thêm) or UPDATE (Sửa), then reload and lock the form."""
         try:
             data = self._read_form()
             if self.state.mode is FormMode.ADD:
@@ -377,7 +403,7 @@ class ReaderScreen(ctk.CTkFrame):
         self._select_id(select_id)
 
     def on_cancel(self):
-        """'Phục hồi': drop pending changes and show the selected row again."""
+        """'Hủy thay đổi': drop pending changes and show the selected row again."""
         self.state.cancel()
         self._on_select()
 
@@ -401,7 +427,7 @@ class ReaderScreen(ctk.CTkFrame):
         ):
             return
         try:
-            DocGiaDAO.delete(record["MADG"])   # deletes immediately, no extra Ghi
+            DocGiaDAO.delete(record["MADG"])   # deletes immediately, no extra Lưu
         except ValueError as error:            # includes FK 547 -> friendly message
             messagebox.showerror("Không thể xóa", str(error))
             return
